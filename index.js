@@ -51,17 +51,48 @@ const CONFIG = {
 let ticketCounter = 1;
 let SECURITY_MODE = true;
 
-// Stores purge counts pending confirmation: channelId -> amount
 const pendingPurges = new Map();
-// Memory map for used spins
 const usedSpins = new Map();
+
+// DATABASE SYSTEM FOR CREDITS: userId -> { balance, peak, lastSender }
+const userProfiles = new Map();
+
+function getUserData(userId) {
+    if (!userProfiles.has(userId)) {
+        userProfiles.set(userId, { balance: 0, peak: 0, lastSender: 'None' });
+    }
+    return userProfiles.get(userId);
+}
+
+function addCredits(userId, amount, senderName = 'System') {
+    const data = getUserData(userId);
+    data.balance += amount;
+    if (data.balance > data.peak) {
+        data.peak = data.balance;
+    }
+    if (senderName !== 'System') {
+        data.lastSender = senderName;
+    }
+    userProfiles.set(userId, data);
+}
+
+function removeCredits(userId, amount) {
+    const data = getUserData(userId);
+    data.balance = Math.max(0, data.balance - amount);
+    userProfiles.set(userId, data);
+}
+
+function parseRewardValue(label) {
+    if (label.endsWith('M')) return parseInt(label) * 1_000_000;
+    if (label.endsWith('K')) return parseInt(label) * 1_000;
+    return parseInt(label) || 0;
+}
 
 function hasCommandRole(member, commandName) {
     const requiredRoleId = CONFIG.COMMAND_ROLES[commandName] || CONFIG.COMMAND_ROLES.setup;
     return member.roles.cache.has(requiredRoleId) || member.permissions.has(PermissionFlagsBits.Administrator);
 }
 
-// Helper: Fetch total invites
 async function getUserInviteCount(guild, userId) {
     try {
         const invites = await guild.invites.fetch();
@@ -72,7 +103,6 @@ async function getUserInviteCount(guild, userId) {
     }
 }
 
-// Helper: Send Log Embed to Log Channel
 async function sendLog(guild, embed) {
     try {
         const logChannel = guild.channels.cache.get(CONFIG.LOGS_CHANNEL_ID) || await guild.channels.fetch(CONFIG.LOGS_CHANNEL_ID).catch(() => null);
@@ -99,12 +129,21 @@ client.once('ready', async () => {
         new SlashCommandBuilder().setName('setup-verify').setDescription('Setup Custom Verification Panel'),
         new SlashCommandBuilder().setName('setup-ticket').setDescription('Setup TANJYA Ticket Support System'),
         
-        // Spin & Points Commands
+        // Spin & Invites Commands
         new SlashCommandBuilder().setName('spin').setDescription('Spin the Wheel (Requires 1 available invite)'),
         new SlashCommandBuilder().setName('spin5').setDescription('Super Spin (Requires 5 available invites)'),
         new SlashCommandBuilder().setName('invites').setDescription('Check your invite count & available spins').addUserOption(opt => opt.setName('user').setDescription('User to check')),
-        new SlashCommandBuilder().setName('points').setDescription('Check your remaining Spin points / available spins').addUserOption(opt => opt.setName('user').setDescription('User to check')),
+        new SlashCommandBuilder().setName('points').setDescription('Check your remaining Spin points').addUserOption(opt => opt.setName('user').setDescription('User to check')),
 
+        // Profile & Economy Commands
+        new SlashCommandBuilder().setName('profile').setDescription('Check your credits profile, peak & level').addUserOption(opt => opt.setName('user').setDescription('User to check')),
+        new SlashCommandBuilder().setName('transfer').setDescription('Transfer credits to another user').addUserOption(opt => opt.setName('user').setDescription('Target User').setRequired(true)).addIntegerOption(opt => opt.setName('amount').setDescription('Amount of credits').setRequired(true)),
+        
+        // Admin / Owner Only Economy Commands
+        new SlashCommandBuilder().setName('givecredits').setDescription('Give credits to a user ID (Owner Only)').addStringOption(opt => opt.setName('userid').setDescription('Target User ID').setRequired(true)).addIntegerOption(opt => opt.setName('amount').setDescription('Amount of credits').setRequired(true)),
+        new SlashCommandBuilder().setName('removecredits').setDescription('Remove credits from a user ID (Owner Only)').addStringOption(opt => opt.setName('userid').setDescription('Target User ID').setRequired(true)).addIntegerOption(opt => opt.setName('amount').setDescription('Amount of credits').setRequired(true)),
+
+        // Moderation Commands
         new SlashCommandBuilder().setName('say').setDescription('Send embed message').addStringOption(opt => opt.setName('text').setDescription('Message').setRequired(true)),
         new SlashCommandBuilder().setName('come').setDescription('Summon user').addUserOption(opt => opt.setName('user').setDescription('Target User').setRequired(true)),
         new SlashCommandBuilder().setName('ban').setDescription('Ban user').addUserOption(opt => opt.setName('user').setDescription('Target').setRequired(true)).addStringOption(opt => opt.setName('reason').setDescription('Reason')),
@@ -122,8 +161,6 @@ client.once('ready', async () => {
 });
 
 // ================= LOG EVENTS =================
-
-// Log: Member Join
 client.on('guildMemberAdd', async (member) => {
     const embed = new EmbedBuilder()
         .setColor('#57F287')
@@ -137,7 +174,6 @@ client.on('guildMemberAdd', async (member) => {
     await sendLog(member.guild, embed);
 });
 
-// Log: Member Leave
 client.on('guildMemberRemove', async (member) => {
     const embed = new EmbedBuilder()
         .setColor('#ED4245')
@@ -150,7 +186,6 @@ client.on('guildMemberRemove', async (member) => {
     await sendLog(member.guild, embed);
 });
 
-// Log: Message Delete
 client.on('messageDelete', async (message) => {
     if (message.author?.bot || !message.guild) return;
 
@@ -172,50 +207,109 @@ client.on('interactionCreate', async (interaction) => {
     if (interaction.isChatInputCommand()) {
         const { commandName, options, guild, member, channel } = interaction;
 
-        const publicCmds = ['spin', 'spin5', 'invites', 'points'];
+        const publicCmds = ['spin', 'spin5', 'invites', 'points', 'profile', 'transfer'];
         if (!publicCmds.includes(commandName) && !hasCommandRole(member, commandName)) {
             return interaction.reply({ content: '❌ MA3NDKCH ROLE BCH T-ST3ML HAD L-COMMAND!', ephemeral: true });
         }
 
-        // SLASH COMMAND: /points
-        if (commandName === 'points') {
+        // PROFILE / CREDITS COMMAND
+        if (commandName === 'profile') {
             const targetUser = options.getUser('user') || member.user;
-            const totalInvites = await getUserInviteCount(guild, targetUser.id);
-            const consumed = usedSpins.get(targetUser.id) || 0;
-            const points = Math.max(0, totalInvites - consumed);
+            const data = getUserData(targetUser.id);
+            const level = Math.floor(data.balance / 1_000_000) + 1;
 
-            const pointsEmbed = new EmbedBuilder()
-                .setColor('#FEE75C')
-                .setTitle(`🎰 Spin Points - ${targetUser.username}`)
-                .setDescription(`• Points Available: **${points}**\n*(1 Spin = 1 Point | 1 Super Spin = 5 Points)*`)
+            const profEmbed = new EmbedBuilder()
+                .setColor('#00d2d3')
+                .setTitle(`💳 Profile & Credits - ${targetUser.username}`)
                 .setThumbnail(targetUser.displayAvatarURL())
-                .setTimestamp();
-
-            return interaction.reply({ embeds: [pointsEmbed] });
-        }
-
-        // INVITE LOGGER COMMAND
-        if (commandName === 'invites') {
-            const targetUser = options.getUser('user') || member.user;
-            const totalInvites = await getUserInviteCount(guild, targetUser.id);
-            const consumed = usedSpins.get(targetUser.id) || 0;
-            const availableSpins = Math.max(0, totalInvites - consumed);
-
-            const invEmbed = new EmbedBuilder()
-                .setColor('#00ff7f')
-                .setTitle(`📩 Invite Tracker - ${targetUser.username}`)
                 .addFields(
-                    { name: '📥 Total Invites', value: `\`${totalInvites}\``, inline: true },
-                    { name: '🎰 Used Spins', value: `\`${consumed}\``, inline: true },
-                    { name: '✨ Available Spins', value: `\`${availableSpins}\``, inline: true }
+                    { name: '💰 Current Credits', value: `\`${data.balance.toLocaleString()} Credits\``, inline: true },
+                    { name: '🚀 Peak Credits', value: `\`${data.peak.toLocaleString()} Credits\``, inline: true },
+                    { name: '⭐ Level', value: `\`Lvl ${level}\``, inline: true },
+                    { name: '🎁 Last Sent By', value: `\`${data.lastSender}\``, inline: false }
                 )
-                .setThumbnail(targetUser.displayAvatarURL())
                 .setTimestamp();
 
-            return interaction.reply({ embeds: [invEmbed] });
+            return interaction.reply({ embeds: [profEmbed] });
         }
 
-        // SPIN COMMANDS
+        // GIVE CREDITS (ADMIN / OWNER)
+        if (commandName === 'givecredits') {
+            const targetId = options.getString('userid');
+            const amount = options.getInteger('amount');
+
+            if (amount <= 0) return interaction.reply({ content: '❌ Amount khass ykon kbr mn 0!', ephemeral: true });
+
+            addCredits(targetId, amount, member.user.tag);
+
+            const logEmbed = new EmbedBuilder()
+                .setColor('#57F287')
+                .setTitle('💵 Admin Credits Added')
+                .addFields(
+                    { name: 'Admin', value: `${member.user.tag}`, inline: true },
+                    { name: 'Target User ID', value: `\`${targetId}\``, inline: true },
+                    { name: 'Amount Added', value: `\`+${amount.toLocaleString()} Credits\``, inline: true }
+                )
+                .setTimestamp();
+            await sendLog(guild, logEmbed);
+
+            return interaction.reply({ content: `✅ **+${amount.toLocaleString()} Credits** tzadat l User ID: \`${targetId}\`!`, ephemeral: true });
+        }
+
+        // REMOVE CREDITS (ADMIN / OWNER)
+        if (commandName === 'removecredits') {
+            const targetId = options.getString('userid');
+            const amount = options.getInteger('amount');
+
+            if (amount <= 0) return interaction.reply({ content: '❌ Amount khass ykon kbr mn 0!', ephemeral: true });
+
+            removeCredits(targetId, amount);
+
+            const logEmbed = new EmbedBuilder()
+                .setColor('#ED4245')
+                .setTitle('💸 Admin Credits Removed')
+                .addFields(
+                    { name: 'Admin', value: `${member.user.tag}`, inline: true },
+                    { name: 'Target User ID', value: `\`${targetId}\``, inline: true },
+                    { name: 'Amount Removed', value: `\`-${amount.toLocaleString()} Credits\``, inline: true }
+                )
+                .setTimestamp();
+            await sendLog(guild, logEmbed);
+
+            return interaction.reply({ content: `✅ **-${amount.toLocaleString()} Credits** t-t3ydat mn User ID: \`${targetId}\`!`, ephemeral: true });
+        }
+
+        // USER TRANSFER CREDITS
+        if (commandName === 'transfer') {
+            const targetUser = options.getUser('user');
+            const amount = options.getInteger('amount');
+
+            if (targetUser.id === member.id) return interaction.reply({ content: '❌ Ma-ymknch t-sift credits l rasak!', ephemeral: true });
+            if (amount <= 0) return interaction.reply({ content: '❌ Amount khass ykon kbr mn 0!', ephemeral: true });
+
+            const senderData = getUserData(member.id);
+            if (senderData.balance < amount) {
+                return interaction.reply({ content: `❌ Ma-3ndkch credits kfya! Current Balance: **${senderData.balance.toLocaleString()}**`, ephemeral: true });
+            }
+
+            removeCredits(member.id, amount);
+            addCredits(targetUser.id, amount, member.user.tag);
+
+            const logEmbed = new EmbedBuilder()
+                .setColor('#FEE75C')
+                .setTitle('🔄 Credits Transfer')
+                .addFields(
+                    { name: 'From', value: `${member.user.tag}`, inline: true },
+                    { name: 'To', value: `${targetUser.tag}`, inline: true },
+                    { name: 'Amount', value: `\`${amount.toLocaleString()} Credits\``, inline: true }
+                )
+                .setTimestamp();
+            await sendLog(guild, logEmbed);
+
+            return interaction.reply({ content: `💸 **${member}** ssift **${amount.toLocaleString()} Credits** l **${targetUser}** b-najah!` });
+        }
+
+        // SPIN COMMANDS (AUTOMATIC CREDITS REWARD)
         if (commandName === 'spin' || commandName === 'spin5') {
             if (channel.parentId !== CONFIG.SPIN_CATEGORY_ID) {
                 return interaction.reply({ content: '❌ Kat-st3ml had l-command ghir f-Ticket d Spin!', ephemeral: true });
@@ -230,20 +324,60 @@ client.on('interactionCreate', async (interaction) => {
 
             if (availableSpins < reqInvites) {
                 return interaction.reply({ 
-                    content: `❌ **Ma-3ndkch kfya d Invites/Points!**\n\n• Total Invites: **${totalInvites}**\n• Consumed Invites: **${consumed}**\n• Available Spins: **${availableSpins}**\n\n> Khassk **${reqInvites - availableSpins}** invite(s) extra bch t-spini!`, 
+                    content: `❌ **Ma-3ndkch kfya d Invites!**\n\n• Total Invites: **${totalInvites}**\n• Consumed Invites: **${consumed}**\n• Available Spins: **${availableSpins}**\n\n> Khassk **${reqInvites - availableSpins}** invite(s) extra bch t-spini!`, 
                     ephemeral: true 
                 });
             }
 
-            // Consume Invites
             usedSpins.set(member.id, consumed + reqInvites);
 
             let rewards = isSuper 
                 ? [{ label: '2M', weight: 70 }, { label: '8M', weight: 20 }, { label: '15M', weight: 10 }]
                 : [{ label: '3M', weight: 60 }, { label: '5M', weight: 30 }, { label: '10M', weight: 10 }];
 
-            const won = getWeightedRandom(rewards);
-            return interaction.reply({ content: `🎰 **Spin Result:** Mabrouk ${member}! Reb7ti **${won}**! 🎉\n*(Remaining Available Spins: ${availableSpins - reqInvites})*` });
+            const wonLabel = getWeightedRandom(rewards);
+            const rewardCredits = parseRewardValue(wonLabel);
+
+            // AUTO ADD CREDITS TO USER PROFILE
+            addCredits(member.id, rewardCredits, 'Spin Wheel');
+
+            const logEmbed = new EmbedBuilder()
+                .setColor('#57F287')
+                .setTitle('🎰 Spin Credits Won')
+                .addFields(
+                    { name: 'User', value: `${member.user.tag}`, inline: true },
+                    { name: 'Type', value: isSuper ? 'Super Spin (5)' : 'Spin (1)', inline: true },
+                    { name: 'Credits Won', value: `\`+${rewardCredits.toLocaleString()} Credits\``, inline: true }
+                )
+                .setTimestamp();
+            await sendLog(guild, logEmbed);
+
+            return interaction.reply({ 
+                content: `🎰 **Spin Result:** Mabrouk ${member}! Reb7ti **${wonLabel}**! 🎉\n` +
+                         `💳 **+${rewardCredits.toLocaleString()} Credits** tzadat f l'account dialk automatiquement!\n` +
+                         `*(Remaining Available Spins: ${availableSpins - reqInvites})*` 
+            });
+        }
+
+        // COMMANDS: invites & points
+        if (commandName === 'points' || commandName === 'invites') {
+            const targetUser = options.getUser('user') || member.user;
+            const totalInvites = await getUserInviteCount(guild, targetUser.id);
+            const consumed = usedSpins.get(targetUser.id) || 0;
+            const availableSpins = Math.max(0, totalInvites - consumed);
+
+            const invEmbed = new EmbedBuilder()
+                .setColor('#00ff7f')
+                .setTitle(`📩 Tracker - ${targetUser.username}`)
+                .addFields(
+                    { name: '📥 Total Invites', value: `\`${totalInvites}\``, inline: true },
+                    { name: '🎰 Used Spins', value: `\`${consumed}\``, inline: true },
+                    { name: '✨ Available Spins / Points', value: `\`${availableSpins}\``, inline: true }
+                )
+                .setThumbnail(targetUser.displayAvatarURL())
+                .setTimestamp();
+
+            return interaction.reply({ embeds: [invEmbed] });
         }
 
         // Setup Commands
@@ -327,19 +461,17 @@ client.on('interactionCreate', async (interaction) => {
     if (interaction.isButton()) {
         const { customId, guild, member, channel } = interaction;
 
-        // BUTTON: Confirm / Cancel ms7
         if (customId === 'confirm_ms7') {
-            await interaction.deferUpdate(); // Prevents "n'a pas répondu à temps"
+            await interaction.deferUpdate();
             const deleteCount = pendingPurges.get(channel.id) || 10;
             pendingPurges.delete(channel.id);
 
             try {
-                // Delete user command + confirmation embed + specified messages
                 const deleted = await channel.bulkDelete(deleteCount + 2, true);
                 const msg = await channel.send(`✅ **Tm3ato ${deleted.size - 2} messages b-najah!**`);
                 setTimeout(() => msg.delete().catch(() => {}), 3000);
             } catch (err) {
-                await channel.send('❌ Ma-qdrch l-bot ymseh l-messages (st3ml messages ql mnl 14 yum).');
+                await channel.send('❌ Ma-qdrch l-bot ymseh l-messages.');
             }
             return;
         }
@@ -373,18 +505,6 @@ client.on('interactionCreate', async (interaction) => {
                 ]
             });
 
-            // LOG: Ticket Created
-            const logEmbed = new EmbedBuilder()
-                .setColor('#57F287')
-                .setTitle('🎫 Ticket Created')
-                .addFields(
-                    { name: 'Ticket Name', value: ticketChannel.name, inline: true },
-                    { name: 'Created By', value: `${member.user.tag}`, inline: true },
-                    { name: 'Type', value: ticketConfig.name, inline: true }
-                )
-                .setTimestamp();
-            await sendLog(guild, logEmbed);
-
             const welcomeMsg = typeKey === 'spin' 
                 ? `Welcome ${member}! Use \`/spin\` or \`/spin5\` here to spin.`
                 : `Hello ${member}, welcome to your ticket`;
@@ -413,18 +533,6 @@ client.on('interactionCreate', async (interaction) => {
 
         if (customId === 'close_ticket') {
             await interaction.reply({ content: '🔒 Ticket closing in 5 seconds...' });
-
-            // LOG: Ticket Closed
-            const logEmbed = new EmbedBuilder()
-                .setColor('#ED4245')
-                .setTitle('🔒 Ticket Closed')
-                .addFields(
-                    { name: 'Channel', value: channel.name, inline: true },
-                    { name: 'Closed By', value: `${member.user.tag}`, inline: true }
-                )
-                .setTimestamp();
-            await sendLog(guild, logEmbed);
-
             setTimeout(() => channel.delete().catch(() => {}), 5000);
         }
 
@@ -444,24 +552,10 @@ client.on('interactionCreate', async (interaction) => {
         }
     }
 
-    // --- MODAL SUBMIT HANDLER ---
     if (interaction.isModalSubmit()) {
         if (interaction.customId === 'modal_close_reason') {
             const reason = interaction.fields.getTextInputValue('reason_input');
             await interaction.reply({ content: `🔒 Closing ticket. Reason: **${reason}**` });
-
-            // LOG: Ticket Closed with Reason
-            const logEmbed = new EmbedBuilder()
-                .setColor('#ED4245')
-                .setTitle('🔒 Ticket Closed (With Reason)')
-                .addFields(
-                    { name: 'Channel', value: interaction.channel.name, inline: true },
-                    { name: 'Closed By', value: `${interaction.user.tag}`, inline: true },
-                    { name: 'Reason', value: reason }
-                )
-                .setTimestamp();
-            await sendLog(interaction.guild, logEmbed);
-
             setTimeout(() => interaction.channel.delete().catch(() => {}), 4000);
         }
     }
@@ -494,12 +588,11 @@ client.on('messageCreate', async (message) => {
         return message.channel.send('🔓 Channel status: **OPEN**');
     }
 
-    // Fixed MS7 Logic
     if (content.startsWith('ms7')) {
         if (!hasCommandRole(message.member, 'setup')) return;
 
         const args = content.split(' ');
-        const amount = parseInt(args[1]) || 10; // Default to 10 if number not given
+        const amount = parseInt(args[1]) || 10;
 
         pendingPurges.set(message.channel.id, amount);
 
