@@ -1,7 +1,7 @@
 const { 
     Client, GatewayIntentBits, Partials, EmbedBuilder, ActionRowBuilder, 
     ButtonBuilder, ButtonStyle, ChannelType, PermissionFlagsBits, 
-    SlashCommandBuilder, REST, Routes, Collection 
+    SlashCommandBuilder, REST, Routes 
 } = require('discord.js');
 
 const client = new Client({
@@ -21,20 +21,20 @@ const CONFIG = {
     CLIENT_ID: process.env.CLIENT_ID,
     STAFF_ROLE_ID: "1535350471630258268",
     VERIFIED_ROLE_ID: "1535350311068242010",
-    TICKET_CATEGORY_ID: "1535351201275707573",
-    SPIN_CATEGORY_ID: "1535350881111769148",
+    TICKET_CATEGORY_ID: "1535351201275707573", // Support Category
+    SPIN_CATEGORY_ID: "1535350881111769148",   // Spin Category
     LOGS_CHANNEL_ID: "1535351343529594950",
     VERIFY_CHANNEL_ID: "1535336059838140467"
 };
 
-let SECURITY_MODE = true; // Mode Security (On/Off)
+let SECURITY_MODE = true;
 const invitesCache = new Map();
 
-// ================= BOT READY & INVITE CACHE =================
+// ================= BOT READY & COMMANDS REGISTRATION =================
 client.once('ready', async () => {
     console.log(`🤖 Bot Ready: ${client.user.tag}`);
     
-    // Cache invites for accurate tracking
+    // Cache invites for tracking
     client.guilds.cache.forEach(async (guild) => {
         try {
             const firstInvites = await guild.invites.fetch();
@@ -46,7 +46,9 @@ client.once('ready', async () => {
 
     // Register Slash Commands
     const commands = [
-        new SlashCommandBuilder().setName('verify').setDescription('Verify yourself to get access to the server'),
+        new SlashCommandBuilder().setName('setup-verify').setDescription('Send verification panel (Staff Only)'),
+        new SlashCommandBuilder().setName('setup-spin-panel').setDescription('Send Spin ticket panel (Staff Only)'),
+        new SlashCommandBuilder().setName('setup-support-panel').setDescription('Send Support ticket panel (Staff Only)'),
         
         new SlashCommandBuilder()
             .setName('say')
@@ -75,7 +77,7 @@ client.once('ready', async () => {
             .setDescription('Start a giveaway')
             .addStringOption(opt => opt.setName('prize').setDescription('Prize').setRequired(true))
             .addStringOption(opt => opt.setName('duration').setDescription('Duration (e.g. 10m, 2h)').setRequired(true))
-            .addIntegerOption(opt => opt.setName('min_invites').setDescription('Minimum required invites (Optional)').setRequired(false)),
+            .addIntegerOption(opt => opt.setName('min_invites').setDescription('Minimum required invites').setRequired(false)),
             
         new SlashCommandBuilder().setName('spin').setDescription('Spin the Wheel (Requires 1 invite)'),
         new SlashCommandBuilder().setName('spin5').setDescription('Super Spin (Requires 5 invites)'),
@@ -111,24 +113,83 @@ function parseDuration(str) {
     return null;
 }
 
+// Fetch total invite count for a user
+async function getUserInviteCount(guild, userId) {
+    const invites = await guild.invites.fetch();
+    const userInvs = invites.filter(i => i.inviter && i.inviter.id === userId);
+    return userInvs.reduce((acc, inv) => acc + inv.uses, 0);
+}
+
+function getWeightedRandom(items) {
+    let total = items.reduce((acc, item) => acc + item.weight, 0);
+    let rand = Math.random() * total;
+    for (let item of items) {
+        if (rand < item.weight) return item.label;
+        rand -= item.weight;
+    }
+}
+
 // ================= SLASH COMMANDS HANDLER =================
 client.on('interactionCreate', async (interaction) => {
     if (!interaction.isChatInputCommand()) return;
 
     const { commandName, options, guild, member, channel } = interaction;
 
-    // --- VERIFY ---
-    if (commandName === 'verify') {
-        if (channel.id !== CONFIG.VERIFY_CHANNEL_ID) {
-            return interaction.reply({ content: '❌ Direct command use to the verification channel only!', ephemeral: true });
+    // Check Staff Role for non-public commands
+    const staffOnlyCmds = ['say', 'come', 'ban', 'timeout', 'giveaway', 'security', 'setup-verify', 'setup-spin-panel', 'setup-support-panel'];
+    if (staffOnlyCmds.includes(commandName)) {
+        if (!member.roles.cache.has(CONFIG.STAFF_ROLE_ID)) {
+            return interaction.reply({ content: '❌ Direct command access restricted to Staff Role!', ephemeral: true });
         }
-        await member.roles.add(CONFIG.VERIFIED_ROLE_ID).catch(() => {});
-        return interaction.reply({ content: '✅ You are verified! Enjoy the community.', ephemeral: true });
+    }
+
+    // --- SETUP VERIFY PANEL ---
+    if (commandName === 'setup-verify') {
+        const embed = new EmbedBuilder()
+            .setColor('#2b2d31')
+            .setTitle('🔒 Server Verification')
+            .setDescription('Wrk 3la l-button bch t-verifiya w tban lik l-community كاملة!');
+
+        const row = new ActionRowBuilder().addComponents(
+            new ButtonBuilder().setCustomId('btn_verify').setLabel('Verify ✅').setStyle(ButtonStyle.Success)
+        );
+
+        await channel.send({ embeds: [embed], components: [row] });
+        return interaction.reply({ content: 'Verify Panel Sent!', ephemeral: true });
+    }
+
+    // --- SETUP SPIN PANEL ---
+    if (commandName === 'setup-spin-panel') {
+        const embed = new EmbedBuilder()
+            .setColor('#f1c40f')
+            .setTitle('🎰 Spin Wheel Ticket')
+            .setDescription('Wrk 3la l-button l-te7t bch t-7el Ticket Spin w t-spini!');
+
+        const row = new ActionRowBuilder().addComponents(
+            new ButtonBuilder().setCustomId('open_spin_ticket').setLabel('Open Spin Ticket 🎰').setStyle(ButtonStyle.Primary)
+        );
+
+        await channel.send({ embeds: [embed], components: [row] });
+        return interaction.reply({ content: 'Spin Panel Sent!', ephemeral: true });
+    }
+
+    // --- SETUP SUPPORT PANEL ---
+    if (commandName === 'setup-support-panel') {
+        const embed = new EmbedBuilder()
+            .setColor('#5865f2')
+            .setTitle('🎫 Support Ticket')
+            .setDescription('Wrk 3la l-button bch t-7el Ticket Support m3a l-Staff!');
+
+        const row = new ActionRowBuilder().addComponents(
+            new ButtonBuilder().setCustomId('open_support_ticket').setLabel('Open Support Ticket 🎫').setStyle(ButtonStyle.Secondary)
+        );
+
+        await channel.send({ embeds: [embed], components: [row] });
+        return interaction.reply({ content: 'Support Panel Sent!', ephemeral: true });
     }
 
     // --- SAY ---
     if (commandName === 'say') {
-        if (!member.roles.cache.has(CONFIG.STAFF_ROLE_ID)) return interaction.reply({ content: '❌ Unauthorized.', ephemeral: true });
         const text = options.getString('text');
         const embed = new EmbedBuilder().setColor('#2b2d31').setDescription(text);
         await channel.send({ embeds: [embed] });
@@ -137,7 +198,6 @@ client.on('interactionCreate', async (interaction) => {
 
     // --- COME ---
     if (commandName === 'come') {
-        if (!member.roles.cache.has(CONFIG.STAFF_ROLE_ID)) return interaction.reply({ content: '❌ Unauthorized.', ephemeral: true });
         const target = options.getUser('user');
         const embed = new EmbedBuilder()
             .setColor('#f1c40f')
@@ -151,7 +211,6 @@ client.on('interactionCreate', async (interaction) => {
 
     // --- BAN ---
     if (commandName === 'ban') {
-        if (!member.permissions.has(PermissionFlagsBits.BanMembers)) return interaction.reply({ content: '❌ Unauthorized.', ephemeral: true });
         const target = options.getUser('user');
         const reason = options.getString('reason') || 'No reason specified';
         await guild.members.ban(target, { reason }).catch(err => interaction.reply({ content: `Err: ${err.message}`, ephemeral: true }));
@@ -160,7 +219,6 @@ client.on('interactionCreate', async (interaction) => {
 
     // --- TIMEOUT ---
     if (commandName === 'timeout') {
-        if (!member.permissions.has(PermissionFlagsBits.ModerateMembers)) return interaction.reply({ content: '❌ Unauthorized.', ephemeral: true });
         const targetUser = options.getUser('user');
         const targetMember = await guild.members.fetch(targetUser.id);
         const durationMs = parseDuration(options.getString('duration'));
@@ -173,14 +231,12 @@ client.on('interactionCreate', async (interaction) => {
 
     // --- SECURITY TOGGLE ---
     if (commandName === 'security') {
-        if (!member.permissions.has(PermissionFlagsBits.Administrator)) return interaction.reply({ content: '❌ Admin only.', ephemeral: true });
         SECURITY_MODE = options.getString('status') === 'on';
         return interaction.reply({ content: `🛡️ Security mode is now **${SECURITY_MODE ? 'ON' : 'OFF'}**.` });
     }
 
-    // --- GIVEAWAY SYSTEM ---
+    // --- GIVEAWAY ---
     if (commandName === 'giveaway') {
-        if (!member.roles.cache.has(CONFIG.STAFF_ROLE_ID)) return interaction.reply({ content: '❌ Unauthorized.', ephemeral: true });
         const prize = options.getString('prize');
         const durationMs = parseDuration(options.getString('duration'));
         const minInvites = options.getInteger('min_invites') || 0;
@@ -206,7 +262,6 @@ client.on('interactionCreate', async (interaction) => {
         collector.on('collect', async i => {
             const req = parseInt(i.customId.split('_')[2]);
             if (req > 0) {
-                // Verify Invites
                 const userInvites = await getUserInviteCount(guild, i.user.id);
                 if (userInvites < req) {
                     return i.reply({ content: `❌ You need at least **${req} invites** to join! You currently have **${userInvites}**.`, ephemeral: true });
@@ -224,10 +279,10 @@ client.on('interactionCreate', async (interaction) => {
         });
     }
 
-    // --- SPIN SYSTEM ---
+    // --- SPIN COMMANDS ---
     if (commandName === 'spin' || commandName === 'spin5') {
         if (channel.parentId !== CONFIG.SPIN_CATEGORY_ID) {
-            return interaction.reply({ content: '❌ You can only use this command inside your dedicated Spin Ticket!', ephemeral: true });
+            return interaction.reply({ content: '❌ You can only use this command inside a Spin Ticket!', ephemeral: true });
         }
 
         const isSuper = commandName === 'spin5';
@@ -238,7 +293,6 @@ client.on('interactionCreate', async (interaction) => {
             return interaction.reply({ content: `❌ You need **${reqInvites} invite(s)** to spin! You have **${userInvites}**.`, ephemeral: true });
         }
 
-        // LUCK CONFIGURATION (Adjust probabilities here)
         let rewards = [
             { label: '3M', weight: 60 },
             { label: '5M', weight: 30 },
@@ -258,52 +312,95 @@ client.on('interactionCreate', async (interaction) => {
     }
 });
 
-// Weighted Random Algorithm for Custom Luck Control
-function getWeightedRandom(items) {
-    let total = items.reduce((acc, item) => acc + item.weight, 0);
-    let rand = Math.random() * total;
-    for (let item of items) {
-        if (rand < item.weight) return item.label;
-        rand -= item.weight;
+// ================= BUTTON INTERACTION HANDLER =================
+client.on('interactionCreate', async (interaction) => {
+    if (!interaction.isButton()) return;
+
+    const { customId, guild, member } = interaction;
+
+    // Verify Button Handler
+    if (customId === 'btn_verify') {
+        await member.roles.add(CONFIG.VERIFIED_ROLE_ID).catch(() => {});
+        return interaction.reply({ content: '✅ You are now verified!', ephemeral: true });
     }
-}
 
-// Fetch total invite count for a user
-async function getUserInviteCount(guild, userId) {
-    const invites = await guild.invites.fetch();
-    const userInvs = invites.filter(i => i.inviter && i.inviter.id === userId);
-    return userInvs.reduce((acc, inv) => acc + inv.uses, 0);
-}
+    // Open Spin Ticket
+    if (customId === 'open_spin_ticket') {
+        const ticketChannel = await guild.channels.create({
+            name: `spin-${member.user.username}`,
+            type: ChannelType.GuildText,
+            parent: CONFIG.SPIN_CATEGORY_ID,
+            permissionOverwrites: [
+                { id: guild.roles.everyone.id, deny: [PermissionFlagsBits.ViewChannel] },
+                { id: member.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] },
+                { id: CONFIG.STAFF_ROLE_ID, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] }
+            ]
+        });
 
-// ================= PREFIX CHAT COMMANDS (line, sd, 7l, ms7) =================
+        const closeRow = new ActionRowBuilder().addComponents(
+            new ButtonBuilder().setCustomId('close_ticket').setLabel('Close Ticket 🔒').setStyle(ButtonStyle.Danger)
+        );
+
+        await ticketChannel.send({ content: `Welcome ${member}! Use \`/spin\` or \`/spin5\` here.`, components: [closeRow] });
+        return interaction.reply({ content: `✅ Ticket created: ${ticketChannel}`, ephemeral: true });
+    }
+
+    // Open Support Ticket
+    if (customId === 'open_support_ticket') {
+        const ticketChannel = await guild.channels.create({
+            name: `ticket-${member.user.username}`,
+            type: ChannelType.GuildText,
+            parent: CONFIG.TICKET_CATEGORY_ID,
+            permissionOverwrites: [
+                { id: guild.roles.everyone.id, deny: [PermissionFlagsBits.ViewChannel] },
+                { id: member.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] },
+                { id: CONFIG.STAFF_ROLE_ID, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] }
+            ]
+        });
+
+        const closeRow = new ActionRowBuilder().addComponents(
+            new ButtonBuilder().setCustomId('close_ticket').setLabel('Close Ticket 🔒').setStyle(ButtonStyle.Danger)
+        );
+
+        await ticketChannel.send({ content: `Welcome ${member}! Staff will be with you shortly.`, components: [closeRow] });
+        return interaction.reply({ content: `✅ Ticket created: ${ticketChannel}`, ephemeral: true });
+    }
+
+    // Close Ticket
+    if (customId === 'close_ticket') {
+        if (!member.roles.cache.has(CONFIG.STAFF_ROLE_ID)) {
+            return interaction.reply({ content: '❌ Only Staff can close tickets.', ephemeral: true });
+        }
+        await interaction.reply({ content: '🔒 Closing ticket in 5 seconds...' });
+        setTimeout(() => interaction.channel.delete().catch(() => {}), 5000);
+    }
+});
+
+// ================= CHAT PREFIX COMMANDS & MODERATION =================
 client.on('messageCreate', async (message) => {
     if (message.author.bot || !message.guild) return;
 
     const content = message.content.toLowerCase().trim();
 
-    // Line Divider
     if (content === 'line') {
         await message.delete().catch(() => {});
-        return message.channel.send('https://media.discordapp.net/attachments/123/456/line.png'); // Replace with your line URL
+        return message.channel.send('https://media.discordapp.net/attachments/123/456/line.png');
     }
 
-    // Close Channel (sd)
     if (content === 'sd') {
         if (!message.member.roles.cache.has(CONFIG.STAFF_ROLE_ID)) return;
         await message.channel.permissionOverwrites.edit(message.guild.roles.everyone, { SendMessages: false });
         return message.channel.send('🔒 Channel Lock Status: **CLOSED**');
     }
 
-    // Open Channel (7l)
     if (content === '7l') {
         if (!message.member.roles.cache.has(CONFIG.STAFF_ROLE_ID)) return;
         await message.channel.permissionOverwrites.edit(message.guild.roles.everyone, { SendMessages: true });
         return message.channel.send('🔓 Channel Lock Status: **OPEN**');
     }
 
-    // Delete Messages with Confirmation (ms7)
     if (content.startsWith('ms7')) {
-        if (!message.member.permissions.has(PermissionFlagsBits.ManageMessages)) return;
+        if (!message.member.roles.cache.has(CONFIG.STAFF_ROLE_ID)) return;
         
         const embed = new EmbedBuilder()
             .setColor('#ed4245')
@@ -319,7 +416,7 @@ client.on('messageCreate', async (message) => {
     }
 });
 
-// Confirm Purge Button Event
+// Purge Confirmation Listener
 client.on('interactionCreate', async (interaction) => {
     if (!interaction.isButton()) return;
 
@@ -333,7 +430,7 @@ client.on('interactionCreate', async (interaction) => {
     }
 });
 
-// ================= ADVANCED INVITE TRACKER & WELCOME LOG =================
+// ================= INVITE TRACKER LOGS =================
 client.on('guildMemberAdd', async (member) => {
     const cachedInvites = invitesCache.get(member.guild.id);
     const newInvites = await member.guild.invites.fetch();
@@ -346,7 +443,6 @@ client.on('guildMemberAdd', async (member) => {
         inviterInfo = `Invited by: <@${usedInvite.inviter.id}> (\`${usedInvite.inviter.tag}\`)\nCode: \`${usedInvite.code}\`\nUses: \`${usedInvite.uses}\``;
     }
 
-    // Refresh cache
     invitesCache.set(member.guild.id, new Map(newInvites.map((inv) => [inv.code, inv.uses])));
 
     if (logChannel) {
@@ -365,23 +461,18 @@ client.on('guildMemberAdd', async (member) => {
     }
 });
 
-// ================= ANTI-RAID & BOT SECURITY =================
+// ================= BOT SECURITY =================
 client.on('guildAuditLogEntryCreate', async (auditLog, guild) => {
     if (!SECURITY_MODE) return;
 
-    const { action, executorId, target } = auditLog;
+    const { action, executorId } = auditLog;
     const executor = await guild.members.fetch(executorId).catch(() => null);
     if (!executor || executor.id === client.user.id || executor.id === guild.ownerId) return;
 
-    // Actions to protect: BOT_ADD, CHANNEL_DELETE, ROLE_DELETE, MEMBER_KICK
-    const protectedActions = [
-        'BotAdd', 'ChannelDelete', 'RoleDelete', 'MemberKick'
-    ];
+    const protectedActions = ['BotAdd', 'ChannelDelete', 'RoleDelete', 'MemberKick'];
 
     if (protectedActions.includes(action)) {
-        // Punish malicious user by removing roles or banning
         await executor.roles.set([]).catch(() => {});
-        
         const logChannel = guild.channels.cache.get(CONFIG.LOGS_CHANNEL_ID);
         if (logChannel) {
             logChannel.send({
