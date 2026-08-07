@@ -1,7 +1,7 @@
 const { 
     Client, GatewayIntentBits, Partials, EmbedBuilder, ActionRowBuilder, 
     ButtonBuilder, ButtonStyle, ChannelType, PermissionFlagsBits, 
-    SlashCommandBuilder, REST, Routes, ModalBuilder, TextInputBuilder, TextInputStyle, AuditLogEvent
+    SlashCommandBuilder, REST, Routes, ModalBuilder, TextInputBuilder, TextInputStyle 
 } = require('discord.js');
 
 const client = new Client({
@@ -10,8 +10,7 @@ const client = new Client({
         GatewayIntentBits.GuildMessages,
         GatewayIntentBits.GuildMembers,
         GatewayIntentBits.GuildInvites,
-        GatewayIntentBits.MessageContent,
-        GatewayIntentBits.GuildModeration // Multi-security permission
+        GatewayIntentBits.MessageContent
     ],
     partials: [Partials.Channel, Partials.Message, Partials.GuildMember]
 });
@@ -24,9 +23,9 @@ const CONFIG = {
     LOGS_CHANNEL_ID: "1535351343529594950",
     SPIN_CATEGORY_ID: "1535350881111769148",
 
-    LINE_IMAGE_URL: "https://cdn.discordapp.com/attachments/1315665568228966410/1535362669421264946/line_Skill_Tower.gif?ex=6a777d6a&is=6a762bea&hm=725c4f798f8725a72c8ce1554cf892532e078e7dd2ad5c8bc829cb53ff69acf5&",
-    THUMBNAIL_URL: "https://cdn.discordapp.com/attachments/1315665568228966410/1535380733198213140/LOGO_GIF_IWTH_SAKURA_FLOWERS.gif?ex=6a778e3c&is=6a763cbc&hm=0e4e3713061b9b6f139c14048d8e13961c9b9ea1865c488a561b6bf49f98fbe8&", 
-    BANNER_URL: "https://cdn.discordapp.com/attachments/1315665568228966410/1535362669773717574/banner_skill_tower_serveur_discord.gif?ex=6a777d6a&is=6a762bea&hm=cf25921e11f6eb09b21cafb4a997d40a3bc28582a2a70f03b3f7601706d3aa19&",    
+    LINE_IMAGE_URL: "https://cdn.discordapp.com/attachments/1315665568228966410/1535362669421264946/line_Skill_Tower.gif",
+    THUMBNAIL_URL: "https://cdn.discordapp.com/attachments/1315665568228966410/1535380733198213140/LOGO_GIF_IWTH_SAKURA_FLOWERS.gif", 
+    BANNER_URL: "https://cdn.discordapp.com/attachments/1315665568228966410/1535362669773717574/banner_skill_tower_serveur_discord.gif",    
 
     COMMAND_ROLES: {
         say: "1535359367606702080",
@@ -52,6 +51,9 @@ const CONFIG = {
 let ticketCounter = 1;
 let SECURITY_MODE = true;
 
+// Stores purge counts pending confirmation: channelId -> amount
+const pendingPurges = new Map();
+// Memory map for used spins
 const usedSpins = new Map();
 
 function hasCommandRole(member, commandName) {
@@ -59,18 +61,7 @@ function hasCommandRole(member, commandName) {
     return member.roles.cache.has(requiredRoleId) || member.permissions.has(PermissionFlagsBits.Administrator);
 }
 
-// Helper function to send Logs
-async function sendLog(guild, embed) {
-    try {
-        const logChannel = guild.channels.cache.get(CONFIG.LOGS_CHANNEL_ID) || await guild.channels.fetch(CONFIG.LOGS_CHANNEL_ID).catch(() => null);
-        if (logChannel) {
-            await logChannel.send({ embeds: [embed] });
-        }
-    } catch (e) {
-        console.error("Log Send Error:", e);
-    }
-}
-
+// Helper: Fetch total invites
 async function getUserInviteCount(guild, userId) {
     try {
         const invites = await guild.invites.fetch();
@@ -78,6 +69,16 @@ async function getUserInviteCount(guild, userId) {
         return userInvs.reduce((acc, inv) => acc + inv.uses, 0);
     } catch {
         return 0;
+    }
+}
+
+// Helper: Send Log Embed to Log Channel
+async function sendLog(guild, embed) {
+    try {
+        const logChannel = guild.channels.cache.get(CONFIG.LOGS_CHANNEL_ID) || await guild.channels.fetch(CONFIG.LOGS_CHANNEL_ID).catch(() => null);
+        if (logChannel) await logChannel.send({ embeds: [embed] });
+    } catch (err) {
+        console.error("Log error:", err);
     }
 }
 
@@ -90,82 +91,20 @@ function getWeightedRandom(items) {
     }
 }
 
-// ================= ANTI-NUKE & LOGS LISTENER =================
-client.on('channelDelete', async (channel) => {
-    if (!channel.guild) return;
-
-    // Check Audit Logs to find who deleted the channel
-    try {
-        const fetchedLogs = await channel.guild.fetchAuditLogs({
-            limit: 1,
-            type: AuditLogEvent.ChannelDelete,
-        });
-        const deletionLog = fetchedLogs.entries.first();
-
-        if (!deletionLog) return;
-
-        const { executor, target } = deletionLog;
-
-        // Skip if deleted by bot itself or owner
-        if (executor.id === client.user.id || executor.id === channel.guild.ownerId) return;
-
-        if (SECURITY_MODE) {
-            const member = await channel.guild.members.fetch(executor.id).catch(() => null);
-
-            if (member) {
-                // Ban/Kick offender
-                await member.ban({ reason: '🛡️ Anti-Nuke: Channel Deletion Protection' }).catch(() => {});
-            }
-
-            // Restore Channel
-            await channel.guild.channels.create({
-                name: channel.name,
-                type: channel.type,
-                topic: channel.topic,
-                parent: channel.parentId,
-                permissionOverwrites: channel.permissionOverwrites.cache
-            }).catch(() => {});
-
-            // Send Security Log
-            const secEmbed = new EmbedBuilder()
-                .setColor('#ff0000')
-                .setTitle('🚨 SECURITY ALERT: ANTI-NUKE ACTIVATED')
-                .addFields(
-                    { name: '👤 Offender', value: `${executor.tag} (\`${executor.id}\`)`, inline: true },
-                    { name: '🗑️ Deleted Room', value: `#${channel.name}`, inline: true },
-                    { name: '⚡ Action Taken', value: `**BANNED** & Room Re-created`, inline: true }
-                )
-                .setTimestamp();
-
-            await sendLog(channel.guild, secEmbed);
-        } else {
-            // Send simple log if security mode is off
-            const logEmbed = new EmbedBuilder()
-                .setColor('#ffa500')
-                .setTitle('🗑️ Channel Deleted')
-                .addFields(
-                    { name: '👤 Executor', value: `${executor.tag} (\`${executor.id}\`)`, inline: true },
-                    { name: '📁 Room Name', value: `#${channel.name}`, inline: true }
-                )
-                .setTimestamp();
-
-            await sendLog(channel.guild, logEmbed);
-        }
-    } catch (err) {
-        console.error('Audit log fetch error:', err);
-    }
-});
-
-// ================= READY & SLASH COMMANDS =================
+// ================= BOT READY & SLASH COMMANDS =================
 client.once('ready', async () => {
     console.log(`🤖 Bot online as ${client.user.tag}`);
 
     const commands = [
         new SlashCommandBuilder().setName('setup-verify').setDescription('Setup Custom Verification Panel'),
         new SlashCommandBuilder().setName('setup-ticket').setDescription('Setup TANJYA Ticket Support System'),
+        
+        // Spin & Points Commands
         new SlashCommandBuilder().setName('spin').setDescription('Spin the Wheel (Requires 1 available invite)'),
         new SlashCommandBuilder().setName('spin5').setDescription('Super Spin (Requires 5 available invites)'),
         new SlashCommandBuilder().setName('invites').setDescription('Check your invite count & available spins').addUserOption(opt => opt.setName('user').setDescription('User to check')),
+        new SlashCommandBuilder().setName('points').setDescription('Check your remaining Spin points / available spins').addUserOption(opt => opt.setName('user').setDescription('User to check')),
+
         new SlashCommandBuilder().setName('say').setDescription('Send embed message').addStringOption(opt => opt.setName('text').setDescription('Message').setRequired(true)),
         new SlashCommandBuilder().setName('come').setDescription('Summon user').addUserOption(opt => opt.setName('user').setDescription('Target User').setRequired(true)),
         new SlashCommandBuilder().setName('ban').setDescription('Ban user').addUserOption(opt => opt.setName('user').setDescription('Target').setRequired(true)).addStringOption(opt => opt.setName('reason').setDescription('Reason')),
@@ -182,17 +121,80 @@ client.once('ready', async () => {
     }
 });
 
+// ================= LOG EVENTS =================
+
+// Log: Member Join
+client.on('guildMemberAdd', async (member) => {
+    const embed = new EmbedBuilder()
+        .setColor('#57F287')
+        .setTitle('📥 Member Joined')
+        .setThumbnail(member.user.displayAvatarURL())
+        .addFields(
+            { name: 'User', value: `${member.user.tag} (${member.id})` },
+            { name: 'Account Created', value: `<t:${Math.floor(member.user.createdTimestamp / 1000)}:R>` }
+        )
+        .setTimestamp();
+    await sendLog(member.guild, embed);
+});
+
+// Log: Member Leave
+client.on('guildMemberRemove', async (member) => {
+    const embed = new EmbedBuilder()
+        .setColor('#ED4245')
+        .setTitle('📤 Member Left')
+        .setThumbnail(member.user.displayAvatarURL())
+        .addFields(
+            { name: 'User', value: `${member.user.tag} (${member.id})` }
+        )
+        .setTimestamp();
+    await sendLog(member.guild, embed);
+});
+
+// Log: Message Delete
+client.on('messageDelete', async (message) => {
+    if (message.author?.bot || !message.guild) return;
+
+    const embed = new EmbedBuilder()
+        .setColor('#FEE75C')
+        .setTitle('🗑️ Message Deleted')
+        .addFields(
+            { name: 'Author', value: `${message.author.tag} (${message.author.id})`, inline: true },
+            { name: 'Channel', value: `${message.channel}`, inline: true },
+            { name: 'Content', value: message.content ? message.content.slice(0, 1024) : '*[No Text Content / Attachment]*' }
+        )
+        .setTimestamp();
+    await sendLog(message.guild, embed);
+});
+
 // ================= INTERACTION HANDLER =================
 client.on('interactionCreate', async (interaction) => {
     
     if (interaction.isChatInputCommand()) {
         const { commandName, options, guild, member, channel } = interaction;
 
-        const publicCmds = ['spin', 'spin5', 'invites'];
+        const publicCmds = ['spin', 'spin5', 'invites', 'points'];
         if (!publicCmds.includes(commandName) && !hasCommandRole(member, commandName)) {
             return interaction.reply({ content: '❌ MA3NDKCH ROLE BCH T-ST3ML HAD L-COMMAND!', ephemeral: true });
         }
 
+        // SLASH COMMAND: /points
+        if (commandName === 'points') {
+            const targetUser = options.getUser('user') || member.user;
+            const totalInvites = await getUserInviteCount(guild, targetUser.id);
+            const consumed = usedSpins.get(targetUser.id) || 0;
+            const points = Math.max(0, totalInvites - consumed);
+
+            const pointsEmbed = new EmbedBuilder()
+                .setColor('#FEE75C')
+                .setTitle(`🎰 Spin Points - ${targetUser.username}`)
+                .setDescription(`• Points Available: **${points}**\n*(1 Spin = 1 Point | 1 Super Spin = 5 Points)*`)
+                .setThumbnail(targetUser.displayAvatarURL())
+                .setTimestamp();
+
+            return interaction.reply({ embeds: [pointsEmbed] });
+        }
+
+        // INVITE LOGGER COMMAND
         if (commandName === 'invites') {
             const targetUser = options.getUser('user') || member.user;
             const totalInvites = await getUserInviteCount(guild, targetUser.id);
@@ -213,6 +215,7 @@ client.on('interactionCreate', async (interaction) => {
             return interaction.reply({ embeds: [invEmbed] });
         }
 
+        // SPIN COMMANDS
         if (commandName === 'spin' || commandName === 'spin5') {
             if (channel.parentId !== CONFIG.SPIN_CATEGORY_ID) {
                 return interaction.reply({ content: '❌ Kat-st3ml had l-command ghir f-Ticket d Spin!', ephemeral: true });
@@ -227,11 +230,12 @@ client.on('interactionCreate', async (interaction) => {
 
             if (availableSpins < reqInvites) {
                 return interaction.reply({ 
-                    content: `❌ **Ma-3ndkch kfya d Invites!**\n\n• Total Invites: **${totalInvites}**\n• Consumed Invites: **${consumed}**\n• Available Spins: **${availableSpins}**\n\n> Khassk **${reqInvites - availableSpins}** invite(s) extra bch t-spini!`, 
+                    content: `❌ **Ma-3ndkch kfya d Invites/Points!**\n\n• Total Invites: **${totalInvites}**\n• Consumed Invites: **${consumed}**\n• Available Spins: **${availableSpins}**\n\n> Khassk **${reqInvites - availableSpins}** invite(s) extra bch t-spini!`, 
                     ephemeral: true 
                 });
             }
 
+            // Consume Invites
             usedSpins.set(member.id, consumed + reqInvites);
 
             let rewards = isSuper 
@@ -242,6 +246,7 @@ client.on('interactionCreate', async (interaction) => {
             return interaction.reply({ content: `🎰 **Spin Result:** Mabrouk ${member}! Reb7ti **${won}**! 🎉\n*(Remaining Available Spins: ${availableSpins - reqInvites})*` });
         }
 
+        // Setup Commands
         if (commandName === 'setup-verify') {
             const embed = new EmbedBuilder()
                 .setColor('#8a2be2')
@@ -314,14 +319,6 @@ client.on('interactionCreate', async (interaction) => {
 
         if (commandName === 'security') {
             SECURITY_MODE = options.getString('status') === 'on';
-
-            const secEmbed = new EmbedBuilder()
-                .setColor(SECURITY_MODE ? '#00ff00' : '#ff0000')
-                .setTitle('🛡️ Security Mode Status Changed')
-                .setDescription(`Security mode is now **${SECURITY_MODE ? 'ENABLED (Anti-Nuke Active)' : 'DISABLED'}** by ${member}`)
-                .setTimestamp();
-
-            await sendLog(guild, secEmbed);
             return interaction.reply({ content: `🛡️ Security mode: **${SECURITY_MODE ? 'ON' : 'OFF'}**.` });
         }
     }
@@ -329,6 +326,29 @@ client.on('interactionCreate', async (interaction) => {
     // --- BUTTON INTERACTIONS ---
     if (interaction.isButton()) {
         const { customId, guild, member, channel } = interaction;
+
+        // BUTTON: Confirm / Cancel ms7
+        if (customId === 'confirm_ms7') {
+            await interaction.deferUpdate(); // Prevents "n'a pas répondu à temps"
+            const deleteCount = pendingPurges.get(channel.id) || 10;
+            pendingPurges.delete(channel.id);
+
+            try {
+                // Delete user command + confirmation embed + specified messages
+                const deleted = await channel.bulkDelete(deleteCount + 2, true);
+                const msg = await channel.send(`✅ **Tm3ato ${deleted.size - 2} messages b-najah!**`);
+                setTimeout(() => msg.delete().catch(() => {}), 3000);
+            } catch (err) {
+                await channel.send('❌ Ma-qdrch l-bot ymseh l-messages (st3ml messages ql mnl 14 yum).');
+            }
+            return;
+        }
+
+        if (customId === 'cancel_ms7') {
+            await interaction.deferUpdate();
+            pendingPurges.delete(channel.id);
+            return interaction.message.delete().catch(() => {});
+        }
 
         if (customId === 'btn_verify') {
             await member.roles.add(CONFIG.VERIFIED_ROLE_ID).catch(() => {});
@@ -352,6 +372,18 @@ client.on('interactionCreate', async (interaction) => {
                     { id: ticketConfig.staffRole, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] }
                 ]
             });
+
+            // LOG: Ticket Created
+            const logEmbed = new EmbedBuilder()
+                .setColor('#57F287')
+                .setTitle('🎫 Ticket Created')
+                .addFields(
+                    { name: 'Ticket Name', value: ticketChannel.name, inline: true },
+                    { name: 'Created By', value: `${member.user.tag}`, inline: true },
+                    { name: 'Type', value: ticketConfig.name, inline: true }
+                )
+                .setTimestamp();
+            await sendLog(guild, logEmbed);
 
             const welcomeMsg = typeKey === 'spin' 
                 ? `Welcome ${member}! Use \`/spin\` or \`/spin5\` here to spin.`
@@ -381,6 +413,18 @@ client.on('interactionCreate', async (interaction) => {
 
         if (customId === 'close_ticket') {
             await interaction.reply({ content: '🔒 Ticket closing in 5 seconds...' });
+
+            // LOG: Ticket Closed
+            const logEmbed = new EmbedBuilder()
+                .setColor('#ED4245')
+                .setTitle('🔒 Ticket Closed')
+                .addFields(
+                    { name: 'Channel', value: channel.name, inline: true },
+                    { name: 'Closed By', value: `${member.user.tag}`, inline: true }
+                )
+                .setTimestamp();
+            await sendLog(guild, logEmbed);
+
             setTimeout(() => channel.delete().catch(() => {}), 5000);
         }
 
@@ -400,10 +444,24 @@ client.on('interactionCreate', async (interaction) => {
         }
     }
 
+    // --- MODAL SUBMIT HANDLER ---
     if (interaction.isModalSubmit()) {
         if (interaction.customId === 'modal_close_reason') {
             const reason = interaction.fields.getTextInputValue('reason_input');
             await interaction.reply({ content: `🔒 Closing ticket. Reason: **${reason}**` });
+
+            // LOG: Ticket Closed with Reason
+            const logEmbed = new EmbedBuilder()
+                .setColor('#ED4245')
+                .setTitle('🔒 Ticket Closed (With Reason)')
+                .addFields(
+                    { name: 'Channel', value: interaction.channel.name, inline: true },
+                    { name: 'Closed By', value: `${interaction.user.tag}`, inline: true },
+                    { name: 'Reason', value: reason }
+                )
+                .setTimestamp();
+            await sendLog(interaction.guild, logEmbed);
+
             setTimeout(() => interaction.channel.delete().catch(() => {}), 4000);
         }
     }
@@ -436,13 +494,19 @@ client.on('messageCreate', async (message) => {
         return message.channel.send('🔓 Channel status: **OPEN**');
     }
 
+    // Fixed MS7 Logic
     if (content.startsWith('ms7')) {
         if (!hasCommandRole(message.member, 'setup')) return;
+
+        const args = content.split(' ');
+        const amount = parseInt(args[1]) || 10; // Default to 10 if number not given
+
+        pendingPurges.set(message.channel.id, amount);
 
         const embed = new EmbedBuilder()
             .setColor('#ed4245')
             .setTitle('⚠️ Confirmation')
-            .setDescription('Wach mt2kd baghi tmss7 hhad l-messages?');
+            .setDescription(`Wach mt2kd baghi tmss7 **${amount}** d l-messages?`);
 
         const row = new ActionRowBuilder().addComponents(
             new ButtonBuilder().setCustomId('confirm_ms7').setLabel('Yes, Delete').setStyle(ButtonStyle.Danger),
