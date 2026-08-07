@@ -1,7 +1,7 @@
 const { 
     Client, GatewayIntentBits, Partials, EmbedBuilder, ActionRowBuilder, 
     ButtonBuilder, ButtonStyle, ChannelType, PermissionFlagsBits, 
-    SlashCommandBuilder, REST, Routes, ModalBuilder, TextInputBuilder, TextInputStyle 
+    SlashCommandBuilder, REST, Routes, ModalBuilder, TextInputBuilder, TextInputStyle, AuditLogEvent
 } = require('discord.js');
 
 const client = new Client({
@@ -10,7 +10,8 @@ const client = new Client({
         GatewayIntentBits.GuildMessages,
         GatewayIntentBits.GuildMembers,
         GatewayIntentBits.GuildInvites,
-        GatewayIntentBits.MessageContent
+        GatewayIntentBits.MessageContent,
+        GatewayIntentBits.GuildModeration // Multi-security permission
     ],
     partials: [Partials.Channel, Partials.Message, Partials.GuildMember]
 });
@@ -51,15 +52,25 @@ const CONFIG = {
 let ticketCounter = 1;
 let SECURITY_MODE = true;
 
-// DATABASE SYSTEM DIAL SPINS CONSUMED (f memory)
-const usedSpins = new Map(); // userId -> usedSpinCount
+const usedSpins = new Map();
 
 function hasCommandRole(member, commandName) {
     const requiredRoleId = CONFIG.COMMAND_ROLES[commandName] || CONFIG.COMMAND_ROLES.setup;
     return member.roles.cache.has(requiredRoleId) || member.permissions.has(PermissionFlagsBits.Administrator);
 }
 
-// Helper to fetch total invites
+// Helper function to send Logs
+async function sendLog(guild, embed) {
+    try {
+        const logChannel = guild.channels.cache.get(CONFIG.LOGS_CHANNEL_ID) || await guild.channels.fetch(CONFIG.LOGS_CHANNEL_ID).catch(() => null);
+        if (logChannel) {
+            await logChannel.send({ embeds: [embed] });
+        }
+    } catch (e) {
+        console.error("Log Send Error:", e);
+    }
+}
+
 async function getUserInviteCount(guild, userId) {
     try {
         const invites = await guild.invites.fetch();
@@ -79,19 +90,82 @@ function getWeightedRandom(items) {
     }
 }
 
-// ================= BOT READY & SLASH COMMANDS =================
+// ================= ANTI-NUKE & LOGS LISTENER =================
+client.on('channelDelete', async (channel) => {
+    if (!channel.guild) return;
+
+    // Check Audit Logs to find who deleted the channel
+    try {
+        const fetchedLogs = await channel.guild.fetchAuditLogs({
+            limit: 1,
+            type: AuditLogEvent.ChannelDelete,
+        });
+        const deletionLog = fetchedLogs.entries.first();
+
+        if (!deletionLog) return;
+
+        const { executor, target } = deletionLog;
+
+        // Skip if deleted by bot itself or owner
+        if (executor.id === client.user.id || executor.id === channel.guild.ownerId) return;
+
+        if (SECURITY_MODE) {
+            const member = await channel.guild.members.fetch(executor.id).catch(() => null);
+
+            if (member) {
+                // Ban/Kick offender
+                await member.ban({ reason: '🛡️ Anti-Nuke: Channel Deletion Protection' }).catch(() => {});
+            }
+
+            // Restore Channel
+            await channel.guild.channels.create({
+                name: channel.name,
+                type: channel.type,
+                topic: channel.topic,
+                parent: channel.parentId,
+                permissionOverwrites: channel.permissionOverwrites.cache
+            }).catch(() => {});
+
+            // Send Security Log
+            const secEmbed = new EmbedBuilder()
+                .setColor('#ff0000')
+                .setTitle('🚨 SECURITY ALERT: ANTI-NUKE ACTIVATED')
+                .addFields(
+                    { name: '👤 Offender', value: `${executor.tag} (\`${executor.id}\`)`, inline: true },
+                    { name: '🗑️ Deleted Room', value: `#${channel.name}`, inline: true },
+                    { name: '⚡ Action Taken', value: `**BANNED** & Room Re-created`, inline: true }
+                )
+                .setTimestamp();
+
+            await sendLog(channel.guild, secEmbed);
+        } else {
+            // Send simple log if security mode is off
+            const logEmbed = new EmbedBuilder()
+                .setColor('#ffa500')
+                .setTitle('🗑️ Channel Deleted')
+                .addFields(
+                    { name: '👤 Executor', value: `${executor.tag} (\`${executor.id}\`)`, inline: true },
+                    { name: '📁 Room Name', value: `#${channel.name}`, inline: true }
+                )
+                .setTimestamp();
+
+            await sendLog(channel.guild, logEmbed);
+        }
+    } catch (err) {
+        console.error('Audit log fetch error:', err);
+    }
+});
+
+// ================= READY & SLASH COMMANDS =================
 client.once('ready', async () => {
     console.log(`🤖 Bot online as ${client.user.tag}`);
 
     const commands = [
         new SlashCommandBuilder().setName('setup-verify').setDescription('Setup Custom Verification Panel'),
         new SlashCommandBuilder().setName('setup-ticket').setDescription('Setup TANJYA Ticket Support System'),
-        
-        // Spin & Invite Commands
         new SlashCommandBuilder().setName('spin').setDescription('Spin the Wheel (Requires 1 available invite)'),
         new SlashCommandBuilder().setName('spin5').setDescription('Super Spin (Requires 5 available invites)'),
         new SlashCommandBuilder().setName('invites').setDescription('Check your invite count & available spins').addUserOption(opt => opt.setName('user').setDescription('User to check')),
-
         new SlashCommandBuilder().setName('say').setDescription('Send embed message').addStringOption(opt => opt.setName('text').setDescription('Message').setRequired(true)),
         new SlashCommandBuilder().setName('come').setDescription('Summon user').addUserOption(opt => opt.setName('user').setDescription('Target User').setRequired(true)),
         new SlashCommandBuilder().setName('ban').setDescription('Ban user').addUserOption(opt => opt.setName('user').setDescription('Target').setRequired(true)).addStringOption(opt => opt.setName('reason').setDescription('Reason')),
@@ -119,7 +193,6 @@ client.on('interactionCreate', async (interaction) => {
             return interaction.reply({ content: '❌ MA3NDKCH ROLE BCH T-ST3ML HAD L-COMMAND!', ephemeral: true });
         }
 
-        // INVITE LOGGER COMMAND
         if (commandName === 'invites') {
             const targetUser = options.getUser('user') || member.user;
             const totalInvites = await getUserInviteCount(guild, targetUser.id);
@@ -140,7 +213,6 @@ client.on('interactionCreate', async (interaction) => {
             return interaction.reply({ embeds: [invEmbed] });
         }
 
-        // SPIN COMMANDS (CONSUME INVITES LOGIC)
         if (commandName === 'spin' || commandName === 'spin5') {
             if (channel.parentId !== CONFIG.SPIN_CATEGORY_ID) {
                 return interaction.reply({ content: '❌ Kat-st3ml had l-command ghir f-Ticket d Spin!', ephemeral: true });
@@ -160,7 +232,6 @@ client.on('interactionCreate', async (interaction) => {
                 });
             }
 
-            // Consume Invites
             usedSpins.set(member.id, consumed + reqInvites);
 
             let rewards = isSuper 
@@ -171,7 +242,6 @@ client.on('interactionCreate', async (interaction) => {
             return interaction.reply({ content: `🎰 **Spin Result:** Mabrouk ${member}! Reb7ti **${won}**! 🎉\n*(Remaining Available Spins: ${availableSpins - reqInvites})*` });
         }
 
-        // Setup Commands
         if (commandName === 'setup-verify') {
             const embed = new EmbedBuilder()
                 .setColor('#8a2be2')
@@ -244,6 +314,14 @@ client.on('interactionCreate', async (interaction) => {
 
         if (commandName === 'security') {
             SECURITY_MODE = options.getString('status') === 'on';
+
+            const secEmbed = new EmbedBuilder()
+                .setColor(SECURITY_MODE ? '#00ff00' : '#ff0000')
+                .setTitle('🛡️ Security Mode Status Changed')
+                .setDescription(`Security mode is now **${SECURITY_MODE ? 'ENABLED (Anti-Nuke Active)' : 'DISABLED'}** by ${member}`)
+                .setTimestamp();
+
+            await sendLog(guild, secEmbed);
             return interaction.reply({ content: `🛡️ Security mode: **${SECURITY_MODE ? 'ON' : 'OFF'}**.` });
         }
     }
@@ -322,7 +400,6 @@ client.on('interactionCreate', async (interaction) => {
         }
     }
 
-    // --- MODAL SUBMIT HANDLER ---
     if (interaction.isModalSubmit()) {
         if (interaction.customId === 'modal_close_reason') {
             const reason = interaction.fields.getTextInputValue('reason_input');
