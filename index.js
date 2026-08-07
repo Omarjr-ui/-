@@ -53,8 +53,6 @@ let SECURITY_MODE = true;
 
 const pendingPurges = new Map();
 const usedSpins = new Map();
-
-// DATABASE SYSTEM FOR CREDITS: userId -> { balance, peak, lastSender }
 const userProfiles = new Map();
 
 function getUserData(userId) {
@@ -83,9 +81,13 @@ function removeCredits(userId, amount) {
 }
 
 function parseRewardValue(label) {
-    if (label.endsWith('M')) return parseInt(label) * 1_000_000;
-    if (label.endsWith('K')) return parseInt(label) * 1_000;
-    return parseInt(label) || 0;
+    const match = label.match(/^(\d+)([MK])?$/i);
+    if (!match) return 0;
+    const num = parseInt(match[1], 10);
+    const unit = match[2] ? match[2].toUpperCase() : '';
+    if (unit === 'M') return num * 1_000_000;
+    if (unit === 'K') return num * 1_000;
+    return num;
 }
 
 function hasCommandRole(member, commandName) {
@@ -98,7 +100,7 @@ async function getUserInviteCount(guild, userId) {
         const invites = await guild.invites.fetch();
         const userInvs = invites.filter(i => i.inviter && i.inviter.id === userId);
         return userInvs.reduce((acc, inv) => acc + inv.uses, 0);
-    } catch {
+    } catch (err) {
         return 0;
     }
 }
@@ -119,6 +121,18 @@ function getWeightedRandom(items) {
         if (rand < item.weight) return item.label;
         rand -= item.weight;
     }
+    return items[0].label;
+}
+
+function parseDuration(str) {
+    const match = str.match(/^(\d+)([mhd])$/i);
+    if (!match) return null;
+    const val = parseInt(match[1], 10);
+    const unit = match[2].toLowerCase();
+    if (unit === 'm') return val * 60 * 1000;
+    if (unit === 'h') return val * 60 * 60 * 1000;
+    if (unit === 'd') return val * 24 * 60 * 60 * 1000;
+    return null;
 }
 
 // ================= BOT READY & SLASH COMMANDS =================
@@ -128,26 +142,18 @@ client.once('ready', async () => {
     const commands = [
         new SlashCommandBuilder().setName('setup-verify').setDescription('Setup Custom Verification Panel'),
         new SlashCommandBuilder().setName('setup-ticket').setDescription('Setup TANJYA Ticket Support System'),
-        
-        // Spin & Invites Commands
         new SlashCommandBuilder().setName('spin').setDescription('Spin the Wheel (Requires 1 available invite)'),
         new SlashCommandBuilder().setName('spin5').setDescription('Super Spin (Requires 5 available invites)'),
         new SlashCommandBuilder().setName('invites').setDescription('Check your invite count & available spins').addUserOption(opt => opt.setName('user').setDescription('User to check')),
         new SlashCommandBuilder().setName('points').setDescription('Check your remaining Spin points').addUserOption(opt => opt.setName('user').setDescription('User to check')),
-
-        // Profile & Economy Commands
         new SlashCommandBuilder().setName('profile').setDescription('Check your credits profile, peak & level').addUserOption(opt => opt.setName('user').setDescription('User to check')),
         new SlashCommandBuilder().setName('transfer').setDescription('Transfer credits to another user').addUserOption(opt => opt.setName('user').setDescription('Target User').setRequired(true)).addIntegerOption(opt => opt.setName('amount').setDescription('Amount of credits').setRequired(true)),
-        
-        // Admin / Owner Only Economy Commands
         new SlashCommandBuilder().setName('givecredits').setDescription('Give credits to a user ID (Owner Only)').addStringOption(opt => opt.setName('userid').setDescription('Target User ID').setRequired(true)).addIntegerOption(opt => opt.setName('amount').setDescription('Amount of credits').setRequired(true)),
         new SlashCommandBuilder().setName('removecredits').setDescription('Remove credits from a user ID (Owner Only)').addStringOption(opt => opt.setName('userid').setDescription('Target User ID').setRequired(true)).addIntegerOption(opt => opt.setName('amount').setDescription('Amount of credits').setRequired(true)),
-
-        // Moderation Commands
         new SlashCommandBuilder().setName('say').setDescription('Send embed message').addStringOption(opt => opt.setName('text').setDescription('Message').setRequired(true)),
         new SlashCommandBuilder().setName('come').setDescription('Summon user').addUserOption(opt => opt.setName('user').setDescription('Target User').setRequired(true)),
         new SlashCommandBuilder().setName('ban').setDescription('Ban user').addUserOption(opt => opt.setName('user').setDescription('Target').setRequired(true)).addStringOption(opt => opt.setName('reason').setDescription('Reason')),
-        new SlashCommandBuilder().setName('timeout').setDescription('Timeout user').addUserOption(opt => opt.setName('user').setDescription('Target').setRequired(true)).addStringOption(opt => opt.setName('duration').setDescription('10m, 2h, 1month').setRequired(true)),
+        new SlashCommandBuilder().setName('timeout').setDescription('Timeout user').addUserOption(opt => opt.setName('user').setDescription('Target').setRequired(true)).addStringOption(opt => opt.setName('duration').setDescription('e.g. 10m, 2h, 1d').setRequired(true)),
         new SlashCommandBuilder().setName('security').setDescription('Toggle Security Mode').addStringOption(opt => opt.setName('status').setDescription('ON/OFF').setRequired(true).addChoices({ name: 'ON', value: 'on' }, { name: 'OFF', value: 'off' }))
     ];
 
@@ -156,7 +162,7 @@ client.once('ready', async () => {
         await rest.put(Routes.applicationCommands(CONFIG.CLIENT_ID), { body: commands });
         console.log('✅ Commands Registered');
     } catch (err) {
-        console.error(err);
+        console.error('Error registering commands:', err);
     }
 });
 
@@ -203,7 +209,7 @@ client.on('messageDelete', async (message) => {
 
 // ================= INTERACTION HANDLER =================
 client.on('interactionCreate', async (interaction) => {
-    
+
     if (interaction.isChatInputCommand()) {
         const { commandName, options, guild, member, channel } = interaction;
 
@@ -212,7 +218,6 @@ client.on('interactionCreate', async (interaction) => {
             return interaction.reply({ content: '❌ MA3NDKCH ROLE BCH T-ST3ML HAD L-COMMAND!', ephemeral: true });
         }
 
-        // PROFILE / CREDITS COMMAND
         if (commandName === 'profile') {
             const targetUser = options.getUser('user') || member.user;
             const data = getUserData(targetUser.id);
@@ -233,7 +238,6 @@ client.on('interactionCreate', async (interaction) => {
             return interaction.reply({ embeds: [profEmbed] });
         }
 
-        // GIVE CREDITS (ADMIN / OWNER)
         if (commandName === 'givecredits') {
             const targetId = options.getString('userid');
             const amount = options.getInteger('amount');
@@ -256,7 +260,6 @@ client.on('interactionCreate', async (interaction) => {
             return interaction.reply({ content: `✅ **+${amount.toLocaleString()} Credits** tzadat l User ID: \`${targetId}\`!`, ephemeral: true });
         }
 
-        // REMOVE CREDITS (ADMIN / OWNER)
         if (commandName === 'removecredits') {
             const targetId = options.getString('userid');
             const amount = options.getInteger('amount');
@@ -279,7 +282,6 @@ client.on('interactionCreate', async (interaction) => {
             return interaction.reply({ content: `✅ **-${amount.toLocaleString()} Credits** t-t3ydat mn User ID: \`${targetId}\`!`, ephemeral: true });
         }
 
-        // USER TRANSFER CREDITS
         if (commandName === 'transfer') {
             const targetUser = options.getUser('user');
             const amount = options.getInteger('amount');
@@ -309,11 +311,12 @@ client.on('interactionCreate', async (interaction) => {
             return interaction.reply({ content: `💸 **${member}** ssift **${amount.toLocaleString()} Credits** l **${targetUser}** b-najah!` });
         }
 
-        // SPIN COMMANDS (AUTOMATIC CREDITS REWARD)
         if (commandName === 'spin' || commandName === 'spin5') {
             if (channel.parentId !== CONFIG.SPIN_CATEGORY_ID) {
                 return interaction.reply({ content: '❌ Kat-st3ml had l-command ghir f-Ticket d Spin!', ephemeral: true });
             }
+
+            await interaction.deferReply();
 
             const isSuper = commandName === 'spin5';
             const reqInvites = isSuper ? 5 : 1;
@@ -323,9 +326,8 @@ client.on('interactionCreate', async (interaction) => {
             const availableSpins = totalInvites - consumed;
 
             if (availableSpins < reqInvites) {
-                return interaction.reply({ 
-                    content: `❌ **Ma-3ndkch kfya d Invites!**\n\n• Total Invites: **${totalInvites}**\n• Consumed Invites: **${consumed}**\n• Available Spins: **${availableSpins}**\n\n> Khassk **${reqInvites - availableSpins}** invite(s) extra bch t-spini!`, 
-                    ephemeral: true 
+                return interaction.editReply({ 
+                    content: `❌ **Ma-3ndkch kfya d Invites!**\n\n• Total Invites: **${totalInvites}**\n• Consumed Invites: **${consumed}**\n• Available Spins: **${availableSpins}**\n\n> Khassk **${reqInvites - availableSpins}** invite(s) extra bch t-spini!`
                 });
             }
 
@@ -338,7 +340,6 @@ client.on('interactionCreate', async (interaction) => {
             const wonLabel = getWeightedRandom(rewards);
             const rewardCredits = parseRewardValue(wonLabel);
 
-            // AUTO ADD CREDITS TO USER PROFILE
             addCredits(member.id, rewardCredits, 'Spin Wheel');
 
             const logEmbed = new EmbedBuilder()
@@ -352,15 +353,15 @@ client.on('interactionCreate', async (interaction) => {
                 .setTimestamp();
             await sendLog(guild, logEmbed);
 
-            return interaction.reply({ 
+            return interaction.editReply({ 
                 content: `🎰 **Spin Result:** Mabrouk ${member}! Reb7ti **${wonLabel}**! 🎉\n` +
                          `💳 **+${rewardCredits.toLocaleString()} Credits** tzadat f l'account dialk automatiquement!\n` +
                          `*(Remaining Available Spins: ${availableSpins - reqInvites})*` 
             });
         }
 
-        // COMMANDS: invites & points
         if (commandName === 'points' || commandName === 'invites') {
+            await interaction.deferReply();
             const targetUser = options.getUser('user') || member.user;
             const totalInvites = await getUserInviteCount(guild, targetUser.id);
             const consumed = usedSpins.get(targetUser.id) || 0;
@@ -377,10 +378,9 @@ client.on('interactionCreate', async (interaction) => {
                 .setThumbnail(targetUser.displayAvatarURL())
                 .setTimestamp();
 
-            return interaction.reply({ embeds: [invEmbed] });
+            return interaction.editReply({ embeds: [invEmbed] });
         }
 
-        // Setup Commands
         if (commandName === 'setup-verify') {
             const embed = new EmbedBuilder()
                 .setColor('#8a2be2')
@@ -451,6 +451,37 @@ client.on('interactionCreate', async (interaction) => {
             return interaction.reply({ content: `Summoned ${target}.`, ephemeral: true });
         }
 
+        if (commandName === 'ban') {
+            const target = options.getUser('user');
+            const reason = options.getString('reason') || 'No reason provided';
+            const targetMember = await guild.members.fetch(target.id).catch(() => null);
+
+            if (!targetMember || !targetMember.bannable) {
+                return interaction.reply({ content: '❌ Ma-ymknch l-bot y-banni had l-user!', ephemeral: true });
+            }
+
+            await targetMember.ban({ reason });
+            return interaction.reply({ content: `✅ **${target.tag}** t-banna b-najah! Reason: ${reason}` });
+        }
+
+        if (commandName === 'timeout') {
+            const target = options.getUser('user');
+            const durationStr = options.getString('duration');
+            const ms = parseDuration(durationStr);
+
+            if (!ms) {
+                return interaction.reply({ content: '❌ Duration ghlat! St3ml format bḥal: `10m`, `2h`, `1d`.', ephemeral: true });
+            }
+
+            const targetMember = await guild.members.fetch(target.id).catch(() => null);
+            if (!targetMember || !targetMember.moderatable) {
+                return interaction.reply({ content: '❌ Ma-ymknch l-bot y-dirlih timeout!', ephemeral: true });
+            }
+
+            await targetMember.timeout(ms, `Timeout by ${member.user.tag}`);
+            return interaction.reply({ content: `✅ **${target.tag}** t-darlih timeout l-moddat **${durationStr}**!` });
+        }
+
         if (commandName === 'security') {
             SECURITY_MODE = options.getString('status') === 'on';
             return interaction.reply({ content: `🛡️ Security mode: **${SECURITY_MODE ? 'ON' : 'OFF'}**.` });
@@ -494,8 +525,9 @@ client.on('interactionCreate', async (interaction) => {
             if (!ticketConfig) return;
 
             const ticketId = ticketCounter++;
+            const sanitizedUser = member.user.username.toLowerCase().replace(/[^a-z0-9]/g, '');
             const ticketChannel = await guild.channels.create({
-                name: `${ticketConfig.name.toLowerCase()}-${member.user.username}`,
+                name: `${ticketConfig.name.toLowerCase()}-${sanitizedUser || 'user'}`,
                 type: ChannelType.GuildText,
                 parent: ticketConfig.category,
                 permissionOverwrites: [
@@ -592,7 +624,7 @@ client.on('messageCreate', async (message) => {
         if (!hasCommandRole(message.member, 'setup')) return;
 
         const args = content.split(' ');
-        const amount = parseInt(args[1]) || 10;
+        const amount = parseInt(args[1], 10) || 10;
 
         pendingPurges.set(message.channel.id, amount);
 
