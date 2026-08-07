@@ -3,6 +3,8 @@ const {
     ButtonBuilder, ButtonStyle, ChannelType, PermissionFlagsBits, 
     SlashCommandBuilder, REST, Routes, ModalBuilder, TextInputBuilder, TextInputStyle 
 } = require('discord.js');
+const fs = require('fs');
+const path = require('path');
 
 const client = new Client({
     intents: [
@@ -53,17 +55,44 @@ let SECURITY_MODE = true;
 
 const pendingPurges = new Map();
 const usedSpins = new Map();
-const userProfiles = new Map();
+
+// ================= DATABASE (JSON FILE STORAGE) =================
+const DB_FILE = path.join(__dirname, 'userProfiles.json');
+let userProfiles = new Map();
+
+function loadDatabase() {
+    try {
+        if (fs.existsSync(DB_FILE)) {
+            const rawData = fs.readFileSync(DB_FILE, 'utf8');
+            const parsed = JSON.parse(rawData);
+            userProfiles = new Map(Object.entries(parsed));
+            console.log('📂 User profiles database loaded successfully.');
+        }
+    } catch (err) {
+        console.error('Error loading database file:', err);
+    }
+}
+
+function saveDatabase() {
+    try {
+        const obj = Object.fromEntries(userProfiles);
+        fs.writeFileSync(DB_FILE, JSON.stringify(obj, null, 2), 'utf8');
+    } catch (err) {
+        console.error('Error saving database file:', err);
+    }
+}
 
 function getUserData(userId) {
-    if (!userProfiles.has(userId)) {
-        userProfiles.set(userId, { balance: 0, peak: 0, lastSender: 'None' });
+    const cleanId = String(userId).replace(/[^0-9]/g, '');
+    if (!userProfiles.has(cleanId)) {
+        userProfiles.set(cleanId, { balance: 0, peak: 0, lastSender: 'None' });
     }
-    return userProfiles.get(userId);
+    return userProfiles.get(cleanId);
 }
 
 function addCredits(userId, amount, senderName = 'System') {
-    const data = getUserData(userId);
+    const cleanId = String(userId).replace(/[^0-9]/g, '');
+    const data = getUserData(cleanId);
     data.balance += amount;
     if (data.balance > data.peak) {
         data.peak = data.balance;
@@ -71,13 +100,16 @@ function addCredits(userId, amount, senderName = 'System') {
     if (senderName !== 'System') {
         data.lastSender = senderName;
     }
-    userProfiles.set(userId, data);
+    userProfiles.set(cleanId, data);
+    saveDatabase();
 }
 
 function removeCredits(userId, amount) {
-    const data = getUserData(userId);
+    const cleanId = String(userId).replace(/[^0-9]/g, '');
+    const data = getUserData(cleanId);
     data.balance = Math.max(0, data.balance - amount);
-    userProfiles.set(userId, data);
+    userProfiles.set(cleanId, data);
+    saveDatabase();
 }
 
 function parseRewardValue(label) {
@@ -137,6 +169,7 @@ function parseDuration(str) {
 
 // ================= BOT READY & SLASH COMMANDS =================
 client.once('ready', async () => {
+    loadDatabase();
     console.log(`🤖 Bot online as ${client.user.tag}`);
 
     const commands = [
@@ -148,8 +181,8 @@ client.once('ready', async () => {
         new SlashCommandBuilder().setName('points').setDescription('Check your remaining Spin points').addUserOption(opt => opt.setName('user').setDescription('User to check')),
         new SlashCommandBuilder().setName('profile').setDescription('Check your credits profile, peak & level').addUserOption(opt => opt.setName('user').setDescription('User to check')),
         new SlashCommandBuilder().setName('transfer').setDescription('Transfer credits to another user').addUserOption(opt => opt.setName('user').setDescription('Target User').setRequired(true)).addIntegerOption(opt => opt.setName('amount').setDescription('Amount of credits').setRequired(true)),
-        new SlashCommandBuilder().setName('givecredits').setDescription('Give credits to a user ID (Owner Only)').addStringOption(opt => opt.setName('userid').setDescription('Target User ID').setRequired(true)).addIntegerOption(opt => opt.setName('amount').setDescription('Amount of credits').setRequired(true)),
-        new SlashCommandBuilder().setName('removecredits').setDescription('Remove credits from a user ID (Owner Only)').addStringOption(opt => opt.setName('userid').setDescription('Target User ID').setRequired(true)).addIntegerOption(opt => opt.setName('amount').setDescription('Amount of credits').setRequired(true)),
+        new SlashCommandBuilder().setName('givecredits').setDescription('Give credits to a user (Owner Only)').addStringOption(opt => opt.setName('userid').setDescription('Target User ID or Mention').setRequired(true)).addIntegerOption(opt => opt.setName('amount').setDescription('Amount of credits').setRequired(true)),
+        new SlashCommandBuilder().setName('removecredits').setDescription('Remove credits from a user (Owner Only)').addStringOption(opt => opt.setName('userid').setDescription('Target User ID or Mention').setRequired(true)).addIntegerOption(opt => opt.setName('amount').setDescription('Amount of credits').setRequired(true)),
         new SlashCommandBuilder().setName('say').setDescription('Send embed message').addStringOption(opt => opt.setName('text').setDescription('Message').setRequired(true)),
         new SlashCommandBuilder().setName('come').setDescription('Summon user').addUserOption(opt => opt.setName('user').setDescription('Target User').setRequired(true)),
         new SlashCommandBuilder().setName('ban').setDescription('Ban user').addUserOption(opt => opt.setName('user').setDescription('Target').setRequired(true)).addStringOption(opt => opt.setName('reason').setDescription('Reason')),
@@ -239,9 +272,11 @@ client.on('interactionCreate', async (interaction) => {
         }
 
         if (commandName === 'givecredits') {
-            const targetId = options.getString('userid');
+            const rawInput = options.getString('userid');
+            const targetId = rawInput.replace(/[^0-9]/g, '');
             const amount = options.getInteger('amount');
 
+            if (!targetId) return interaction.reply({ content: '❌ User ID ma-saḥiḥch!', ephemeral: true });
             if (amount <= 0) return interaction.reply({ content: '❌ Amount khass ykon kbr mn 0!', ephemeral: true });
 
             addCredits(targetId, amount, member.user.tag);
@@ -251,19 +286,21 @@ client.on('interactionCreate', async (interaction) => {
                 .setTitle('💵 Admin Credits Added')
                 .addFields(
                     { name: 'Admin', value: `${member.user.tag}`, inline: true },
-                    { name: 'Target User ID', value: `\`${targetId}\``, inline: true },
+                    { name: 'Target User', value: `<@${targetId}> (\`${targetId}\`)`, inline: true },
                     { name: 'Amount Added', value: `\`+${amount.toLocaleString()} Credits\``, inline: true }
                 )
                 .setTimestamp();
             await sendLog(guild, logEmbed);
 
-            return interaction.reply({ content: `✅ **+${amount.toLocaleString()} Credits** tzadat l User ID: \`${targetId}\`!`, ephemeral: true });
+            return interaction.reply({ content: `✅ **+${amount.toLocaleString()} Credits** tzadat l <@${targetId}>!`, ephemeral: true });
         }
 
         if (commandName === 'removecredits') {
-            const targetId = options.getString('userid');
+            const rawInput = options.getString('userid');
+            const targetId = rawInput.replace(/[^0-9]/g, '');
             const amount = options.getInteger('amount');
 
+            if (!targetId) return interaction.reply({ content: '❌ User ID ma-saḥiḥch!', ephemeral: true });
             if (amount <= 0) return interaction.reply({ content: '❌ Amount khass ykon kbr mn 0!', ephemeral: true });
 
             removeCredits(targetId, amount);
@@ -273,13 +310,13 @@ client.on('interactionCreate', async (interaction) => {
                 .setTitle('💸 Admin Credits Removed')
                 .addFields(
                     { name: 'Admin', value: `${member.user.tag}`, inline: true },
-                    { name: 'Target User ID', value: `\`${targetId}\``, inline: true },
+                    { name: 'Target User', value: `<@${targetId}> (\`${targetId}\`)`, inline: true },
                     { name: 'Amount Removed', value: `\`-${amount.toLocaleString()} Credits\``, inline: true }
                 )
                 .setTimestamp();
             await sendLog(guild, logEmbed);
 
-            return interaction.reply({ content: `✅ **-${amount.toLocaleString()} Credits** t-t3ydat mn User ID: \`${targetId}\`!`, ephemeral: true });
+            return interaction.reply({ content: `✅ **-${amount.toLocaleString()} Credits** t-t3ydat mn <@${targetId}>!`, ephemeral: true });
         }
 
         if (commandName === 'transfer') {
