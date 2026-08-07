@@ -21,11 +21,12 @@ const CONFIG = {
     CLIENT_ID: process.env.CLIENT_ID,
     VERIFIED_ROLE_ID: "1535350311068242010",
     LOGS_CHANNEL_ID: "1535351343529594950",
-    LINE_IMAGE_URL: "https://imgur.com/a/JbHRNIw",
+    SPIN_CATEGORY_ID: "1535350881111769148", // Spin Tickets Category
 
-    // CUSTOM IMAGES FROM USER
-    THUMBNAIL_URL: "https://imgur.com/a/0F9UxWx", 
-    BANNER_URL: "https://imgur.com/a/vS3nUPT",    
+    // UPDATED URLS FROM USER
+    LINE_IMAGE_URL: "https://cdn.discordapp.com/attachments/1315665568228966410/1535362669421264946/line_Skill_Tower.gif?ex=6a777d6a&is=6a762bea&hm=725c4f798f8725a72c8ce1554cf892532e078e7dd2ad5c8bc829cb53ff69acf5&",
+    THUMBNAIL_URL: "https://cdn.discordapp.com/attachments/1315665568228966410/1535362670033768630/sw_logo_animated.gif?ex=6a777d6a&is=6a762bea&hm=63aa6dd141b99dd52ad358b2a759c860ce7456d33319c830b1d3cf22564870a8&", 
+    BANNER_URL: "https://cdn.discordapp.com/attachments/1315665568228966410/1535362669773717574/banner_skill_tower_serveur_discord.gif?ex=6a777d6a&is=6a762bea&hm=cf25921e11f6eb09b21cafb4a997d40a3bc28582a2a70f03b3f7601706d3aa19&",    
 
     // ROLES PER COMMAND
     COMMAND_ROLES: {
@@ -45,7 +46,8 @@ const CONFIG = {
         abuse: { name: 'Abuse', category: '1535360378551279656', staffRole: '1535350471630258268' },
         server: { name: 'Server', category: '1535360321072398446', staffRole: '1535350471630258268' },
         staff: { name: 'Staff Abuse', category: '1535360289640554536', staffRole: '1535350471630258268' },
-        donate: { name: 'Donate', category: '1535360193548787762', staffRole: '1535350471630258268' }
+        donate: { name: 'Donate', category: '1535360193548787762', staffRole: '1535350471630258268' },
+        spin: { name: 'Spin', category: '1535350881111769148', staffRole: '1535350471630258268' }
     }
 };
 
@@ -58,6 +60,22 @@ function hasCommandRole(member, commandName) {
     return member.roles.cache.has(requiredRoleId) || member.permissions.has(PermissionFlagsBits.Administrator);
 }
 
+// Helper to fetch invite count for Spin Wheel
+async function getUserInviteCount(guild, userId) {
+    const invites = await guild.invites.fetch();
+    const userInvs = invites.filter(i => i.inviter && i.inviter.id === userId);
+    return userInvs.reduce((acc, inv) => acc + inv.uses, 0);
+}
+
+function getWeightedRandom(items) {
+    let total = items.reduce((acc, item) => acc + item.weight, 0);
+    let rand = Math.random() * total;
+    for (let item of items) {
+        if (rand < item.weight) return item.label;
+        rand -= item.weight;
+    }
+}
+
 // ================= BOT READY & SLASH COMMANDS =================
 client.once('ready', async () => {
     console.log(`🤖 Bot online as ${client.user.tag}`);
@@ -65,6 +83,11 @@ client.once('ready', async () => {
     const commands = [
         new SlashCommandBuilder().setName('setup-verify').setDescription('Setup Custom Verification Panel'),
         new SlashCommandBuilder().setName('setup-ticket').setDescription('Setup TANJYA Ticket Support System'),
+        
+        // Spin Slash Commands
+        new SlashCommandBuilder().setName('spin').setDescription('Spin the Wheel (Requires 1 invite)'),
+        new SlashCommandBuilder().setName('spin5').setDescription('Super Spin (Requires 5 invites)'),
+
         new SlashCommandBuilder().setName('say').setDescription('Send embed message').addStringOption(opt => opt.setName('text').setDescription('Message').setRequired(true)),
         new SlashCommandBuilder().setName('come').setDescription('Summon user').addUserOption(opt => opt.setName('user').setDescription('Target User').setRequired(true)),
         new SlashCommandBuilder().setName('ban').setDescription('Ban user').addUserOption(opt => opt.setName('user').setDescription('Target').setRequired(true)).addStringOption(opt => opt.setName('reason').setDescription('Reason')),
@@ -88,11 +111,13 @@ client.on('interactionCreate', async (interaction) => {
     if (interaction.isChatInputCommand()) {
         const { commandName, options, guild, member, channel } = interaction;
 
-        if (!hasCommandRole(member, commandName)) {
+        // Public commands check
+        const publicCmds = ['spin', 'spin5'];
+        if (!publicCmds.includes(commandName) && !hasCommandRole(member, commandName)) {
             return interaction.reply({ content: '❌ MA3NDKCH ROLE BCH T-ST3ML HAD L-COMMAND!', ephemeral: true });
         }
 
-        // Setup Verify (Custom Redesign)
+        // Setup Verify
         if (commandName === 'setup-verify') {
             const embed = new EmbedBuilder()
                 .setColor('#8a2be2')
@@ -117,7 +142,7 @@ client.on('interactionCreate', async (interaction) => {
             return interaction.reply({ content: '✅ Verify Panel Sent!', ephemeral: true });
         }
 
-        // Setup Ticket (TANJYA Ticket Support System)
+        // Setup Ticket (Support Panel + Spin Button)
         if (commandName === 'setup-ticket') {
             const embed = new EmbedBuilder()
                 .setColor('#2b2d31')
@@ -129,7 +154,8 @@ client.on('interactionCreate', async (interaction) => {
                     `• 🛠️ **Abuse** : \`Report abuse or harassment\` ⚔️\n` +
                     `• 👾 **Server** : \`Server info or requests\` ⚔️\n` +
                     `• 🔨 **Staff Abuse** : \`Report staff issues\` ⚔️\n` +
-                    `• 💵 **Donate** : \`Support The Server\` ⚔️\n\n` +
+                    `• 💵 **Donate** : \`Support The Server\` ⚔️\n` +
+                    `• 🎰 **Spin Wheel** : \`Open Spin Ticket\` ⚔️\n\n` +
                     `• 🌸 ⚡ Use these modules for assistance or to report issues. Our team is here to help!`
                 )
                 .setThumbnail(CONFIG.THUMBNAIL_URL)
@@ -144,11 +170,34 @@ client.on('interactionCreate', async (interaction) => {
             const row2 = new ActionRowBuilder().addComponents(
                 new ButtonBuilder().setCustomId('ticket_server').setLabel('Server').setStyle(ButtonStyle.Secondary).setEmoji('👾'),
                 new ButtonBuilder().setCustomId('ticket_staff').setLabel('Staff').setStyle(ButtonStyle.Secondary).setEmoji('🔨'),
-                new ButtonBuilder().setCustomId('ticket_donate').setLabel('Donate').setStyle(ButtonStyle.Success).setEmoji('💵')
+                new ButtonBuilder().setCustomId('ticket_donate').setLabel('Donate').setStyle(ButtonStyle.Success).setEmoji('💵'),
+                new ButtonBuilder().setCustomId('ticket_spin').setLabel('Spin Wheel').setStyle(ButtonStyle.Primary).setEmoji('🎰')
             );
 
             await channel.send({ embeds: [embed], components: [row1, row2] });
             return interaction.reply({ content: '✅ Ticket Panel Sent!', ephemeral: true });
+        }
+
+        // Spin Commands Implementation
+        if (commandName === 'spin' || commandName === 'spin5') {
+            if (channel.parentId !== CONFIG.SPIN_CATEGORY_ID) {
+                return interaction.reply({ content: '❌ Kat-st3ml had l-command ghir f-Ticket d Spin!', ephemeral: true });
+            }
+
+            const isSuper = commandName === 'spin5';
+            const reqInvites = isSuper ? 5 : 1;
+            const userInvites = await getUserInviteCount(guild, member.id);
+
+            if (userInvites < reqInvites) {
+                return interaction.reply({ content: `❌ Khassk **${reqInvites} invites** bch t-spini! 3ndk daba **${userInvites}**.`, ephemeral: true });
+            }
+
+            let rewards = isSuper 
+                ? [{ label: '2M', weight: 70 }, { label: '8M', weight: 20 }, { label: '15M', weight: 10 }]
+                : [{ label: '3M', weight: 60 }, { label: '5M', weight: 30 }, { label: '10M', weight: 10 }];
+
+            const won = getWeightedRandom(rewards);
+            return interaction.reply({ content: `🎰 **Spin Result:** Mabrouk! Reb7ti **${won}**! 🎉` });
         }
 
         if (commandName === 'say') {
@@ -159,8 +208,8 @@ client.on('interactionCreate', async (interaction) => {
 
         if (commandName === 'come') {
             const target = options.getUser('user');
-            await target.send(` You have been summoned by ${member} in ${channel}!`).catch(() => {});
-            return interaction.reply({ content: ` Summoned ${target}.`, ephemeral: true });
+            await target.send(`You have been summoned by ${member} in ${channel}!`).catch(() => {});
+            return interaction.reply({ content: `Summoned ${target}.`, ephemeral: true });
         }
 
         if (commandName === 'security') {
@@ -179,7 +228,7 @@ client.on('interactionCreate', async (interaction) => {
             return interaction.reply({ content: '✅ Verified successfully!', ephemeral: true });
         }
 
-        // TICKET CREATION LOGIC
+        // TICKET CREATION LOGIC (Handles Spin + All Support categories)
         if (customId.startsWith('ticket_')) {
             const typeKey = customId.replace('ticket_', '');
             const ticketConfig = CONFIG.TICKETS[typeKey];
@@ -198,11 +247,14 @@ client.on('interactionCreate', async (interaction) => {
                 ]
             });
 
-            // Embed inside created ticket (Matches Image 2)
+            const welcomeMsg = typeKey === 'spin' 
+                ? `Welcome ${member}! Use \`/spin\` or \`/spin5\` here to spin.`
+                : `Hello ${member}, welcome to your ticket`;
+
             const ticketEmbed = new EmbedBuilder()
                 .setColor('#2b2d31')
                 .setTitle(`🏺 Ticket #${ticketId}`)
-                .setDescription(`Hello ${member}, welcome to your ticket`)
+                .setDescription(welcomeMsg)
                 .addFields(
                     { name: 'Type', value: `\`${ticketConfig.name.toLowerCase()}\``, inline: true },
                     { name: 'Created By', value: `${member}`, inline: true },
