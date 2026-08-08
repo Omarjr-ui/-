@@ -29,8 +29,7 @@ const CONFIG = {
     LOGS_CHANNEL_ID: "1535351343529594950",
     SPIN_CATEGORY_ID: "1535350881111769148",
 
-    // Zit hna l-IDs dial les channels li mssmo7 fihom casino (ila kano khawya kyt3tabr gga3 les channels mssmohin)
-    CASINO_CHANNELS_IDS: [1535751054233440347, 1535750990710444093, 1535750875471945909], 
+    CASINO_CHANNELS_IDS: [1535750875471945909, 1535750990710444093, 1535751054233440347], 
 
     LINE_IMAGE_URL: "https://cdn.discordapp.com/attachments/1315665568228966410/1535362669421264946/line_Skill_Tower.gif",
     THUMBNAIL_URL: "https://cdn.discordapp.com/attachments/1315665568228966410/1535380733198213140/LOGO_GIF_IWTH_SAKURA_FLOWERS.gif", 
@@ -62,7 +61,7 @@ let SECURITY_MODE = true;
 
 const pendingPurges = new Map();
 const usedSpins = new Map();
-const activeCasinoGames = new Set(); // Multi-game lock to prevent exploits
+const activeCasinoGames = new Set();
 
 // ================= DATABASE (JSON FILE STORAGE) =================
 const DB_FILE = path.join(__dirname, 'userProfiles.json');
@@ -120,7 +119,6 @@ function removeCredits(userId, amount) {
     saveDatabase();
 }
 
-// Format Input Function (1m -> 1,000,000 / 1k -> 1,000)
 function parseAmount(input) {
     if (typeof input === 'number') return input;
     if (!input || typeof input !== 'string') return null;
@@ -203,24 +201,20 @@ client.once('ready', async () => {
         new SlashCommandBuilder().setName('points').setDescription('Check your remaining Spin points').addUserOption(opt => opt.setName('user').setDescription('User to check')),
         new SlashCommandBuilder().setName('profile').setDescription('Check your credits profile, peak & level').addUserOption(opt => opt.setName('user').setDescription('User to check')),
         
-        // Transfers & Credits
         new SlashCommandBuilder().setName('sendluxa').setDescription('Transfer credits securely').addUserOption(opt => opt.setName('user').setDescription('Target User').setRequired(true)).addStringOption(opt => opt.setName('amount').setDescription('e.g. 100k, 1m, 5000').setRequired(true)),
         new SlashCommandBuilder().setName('transfer').setDescription('Transfer credits to another user').addUserOption(opt => opt.setName('user').setDescription('Target User').setRequired(true)).addStringOption(opt => opt.setName('amount').setDescription('Amount e.g 1m').setRequired(true)),
         new SlashCommandBuilder().setName('givecredits').setDescription('Give credits to a user (Owner Only)').addStringOption(opt => opt.setName('userid').setDescription('Target User ID or Mention').setRequired(true)).addStringOption(opt => opt.setName('amount').setDescription('Amount of credits e.g 10m').setRequired(true)),
         new SlashCommandBuilder().setName('removecredits').setDescription('Remove credits from a user (Owner Only)').addStringOption(opt => opt.setName('userid').setDescription('Target User ID or Mention').setRequired(true)).addStringOption(opt => opt.setName('amount').setDescription('Amount of credits e.g 10m').setRequired(true)),
 
-        // Help & Utility
         new SlashCommandBuilder().setName('idbot').setDescription('Get bot ID & deposit instructions'),
         new SlashCommandBuilder().setName('tutorial').setDescription('How to deposit and play games'),
 
-        // Casino Games (5 Modes)
         new SlashCommandBuilder().setName('blackjack').setDescription('Play Blackjack (Multiplier 2.5x)').addStringOption(opt => opt.setName('bet').setDescription('Amount to bet (e.g. 100k, 1m)').setRequired(true)),
         new SlashCommandBuilder().setName('roulette').setDescription('Play Roulette').addStringOption(opt => opt.setName('bet').setDescription('Amount to bet').setRequired(true)).addStringOption(opt => opt.setName('space').setDescription('red, black, green, even, odd, or number (0-36)').setRequired(true)),
         new SlashCommandBuilder().setName('crash').setDescription('Play Crash Game').addStringOption(opt => opt.setName('bet').setDescription('Amount to bet').setRequired(true)),
         new SlashCommandBuilder().setName('mines').setDescription('Play Mines').addStringOption(opt => opt.setName('bet').setDescription('Amount to bet').setRequired(true)).addIntegerOption(opt => opt.setName('bombs').setDescription('Number of bombs (1-24)').setRequired(false)),
         new SlashCommandBuilder().setName('coinflip').setDescription('Flip a coin').addStringOption(opt => opt.setName('bet').setDescription('Amount to bet').setRequired(true)).addStringOption(opt => opt.setName('side').setDescription('heads or tails').setRequired(true).addChoices({ name: 'Heads', value: 'heads' }, { name: 'Tails', value: 'tails' })),
 
-        // Admin & Moderation
         new SlashCommandBuilder().setName('say').setDescription('Send embed message').addStringOption(opt => opt.setName('text').setDescription('Message').setRequired(true)),
         new SlashCommandBuilder().setName('come').setDescription('Summon user').addUserOption(opt => opt.setName('user').setDescription('Target User').setRequired(true)),
         new SlashCommandBuilder().setName('ban').setDescription('Ban user').addUserOption(opt => opt.setName('user').setDescription('Target').setRequired(true)).addStringOption(opt => opt.setName('reason').setDescription('Reason')),
@@ -237,11 +231,10 @@ client.once('ready', async () => {
     }
 });
 
-// ================= MESSAGE CREATE LISTENERS (Tax, Chat Commands & Profile) =================
+// ================= MESSAGE CREATE LISTENERS =================
 client.on('messageCreate', async (message) => {
     if (message.author.bot || !message.guild) return;
 
-    // 1. Check Profile when user types 'p' f chat
     if (message.content.trim().toLowerCase() === 'p') {
         const data = getUserData(message.author.id);
         const level = Math.floor(data.balance / 1_000_000) + 1;
@@ -261,7 +254,6 @@ client.on('messageCreate', async (message) => {
         return message.reply({ embeds: [profEmbed] });
     }
 
-    // 2. Text command 'c @user amount' transfer shortcut
     if (message.content.startsWith('c ')) {
         const parts = message.content.split(/\s+/);
         if (parts.length >= 3) {
@@ -269,7 +261,7 @@ client.on('messageCreate', async (message) => {
             const rawAmount = parts[2];
             const amount = parseAmount(rawAmount);
 
-            if (!targetUser) return message.reply('❌ Taggi user s'hih! Format: `c @user 1m`');
+            if (!targetUser) return message.reply("❌ Taggi user s'hih! Format: `c @user 1m`");
             if (targetUser.id === message.author.id) return message.reply('❌ Ma-ymknch t-sift credits l rasak!');
             if (!amount || amount <= 0) return message.reply('❌ Amount ghlat!');
 
@@ -285,9 +277,7 @@ client.on('messageCreate', async (message) => {
         }
     }
 
-    // 3. TAX SYSTEM & DEPOSIT DETECTOR (If user sends currency to Bot ID)
     if (message.content.includes(CONFIG.BOT_ID) || message.mentions.users.has(CONFIG.BOT_ID)) {
-        // Look for potential credit numbers in the text message
         const match = message.content.match(/(\d+(?:\.\d+)?\s*[kmb]?)/i);
         if (match) {
             const parsedAmount = parseAmount(match[0]);
@@ -295,9 +285,7 @@ client.on('messageCreate', async (message) => {
                 const tax = Math.floor(parsedAmount * CONFIG.TAX_PERCENT);
                 const finalAmount = parsedAmount - tax;
 
-                // Credit Tax to Owner
                 addCredits(CONFIG.TAX_OWNER_ID, tax, `Tax from ${message.author.tag}`);
-                // Credit remainder to user
                 addCredits(message.author.id, finalAmount, 'Deposit System');
 
                 return message.reply({
@@ -365,13 +353,11 @@ client.on('interactionCreate', async (interaction) => {
             return interaction.reply({ content: '❌ MA3NDKCH ROLE BCH T-ST3ML HAD L-COMMAND!', ephemeral: true });
         }
 
-        // Restriction Check for Casino Channels
         const casinoCmds = ['blackjack', 'roulette', 'crash', 'mines', 'coinflip'];
         if (casinoCmds.includes(commandName) && !isCasinoChannel(channel.id)) {
             return interaction.reply({ content: '❌ Had l-command mssmouha ghir f les channels dial Casino!', ephemeral: true });
         }
 
-        // HELP & ID BOT COMMANDS
         if (commandName === 'idbot' || commandName === 'tutorial') {
             const embed = new EmbedBuilder()
                 .setColor('#00d2d3')
@@ -469,7 +455,6 @@ client.on('interactionCreate', async (interaction) => {
 
             removeCredits(member.id, amount);
 
-            // TAX applies if sent directly to bot
             if (targetUser.id === CONFIG.BOT_ID) {
                 const tax = Math.floor(amount * CONFIG.TAX_PERCENT);
                 const finalAmount = amount - tax;
@@ -498,9 +483,7 @@ client.on('interactionCreate', async (interaction) => {
             return interaction.reply({ content: `💸 **${member}** ssift **${amount.toLocaleString()} Luxa** l **${targetUser}** b-najah!` });
         }
 
-        // =========================================================================
-        // ============================ CASINO MODES ===============================
-        // =========================================================================
+        // ================= CASINO MODES =================
 
         // 1. BLACKJACK (Multiplier 2.5x)
         if (commandName === 'blackjack') {
@@ -510,7 +493,7 @@ client.on('interactionCreate', async (interaction) => {
             const userData = getUserData(member.id);
             if (userData.balance < bet) return interaction.reply({ content: `❌ Ma-3ndkch balance kfya! Balance dialk: **${userData.balance.toLocaleString()} Luxa**`, ephemeral: true });
 
-            if (activeCasinoGames.has(member.id)) return interaction.reply({ content: '❌ 3ndk game active khra, kmlha hyya l'owla!', ephemeral: true });
+            if (activeCasinoGames.has(member.id)) return interaction.reply({ content: "❌ 3ndk game active khra, kmlha hyya l'owla!", ephemeral: true });
             activeCasinoGames.add(member.id);
 
             removeCredits(member.id, bet);
