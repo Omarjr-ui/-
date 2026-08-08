@@ -214,7 +214,9 @@ client.on('messageCreate', async (message) => {
             const tax = Math.floor(amount * CONFIG.TAX_PERCENT);
             const finalAmount = amount - tax;
 
+            // 1. Sift tax l owner
             addCredits(CONFIG.TAX_OWNER_ID, tax, `Tax from ${message.author.tag}`);
+            // 2. Zid l-mablagh li bqa f hesab l-user f l-bot
             addCredits(message.author.id, finalAmount, 'Deposit System');
 
             return message.reply({
@@ -331,13 +333,6 @@ client.on('interactionCreate', async (interaction) => {
         if (targetUser.id === member.id) return interaction.reply({ content: '❌ Ma-ymknch t-sift credits l rasak!', ephemeral: true });
         if (!amount || amount <= 0) return interaction.reply({ content: '❌ Amount ghlat!', ephemeral: true });
 
-        const senderData = getUserData(member.id);
-        if (senderData.balance < amount) {
-            return interaction.reply({ content: `❌ Ma-3ndkch credits kfya! Balance: **${senderData.balance.toLocaleString()} Luxa**`, ephemeral: true });
-        }
-
-        removeCredits(member.id, amount);
-
         if (targetUser.id === CONFIG.BOT_ID) {
             const tax = Math.floor(amount * CONFIG.TAX_PERCENT);
             const finalAmount = amount - tax;
@@ -350,6 +345,12 @@ client.on('interactionCreate', async (interaction) => {
             });
         }
 
+        const senderData = getUserData(member.id);
+        if (senderData.balance < amount) {
+            return interaction.reply({ content: `❌ Ma-3ndkch credits kfya! Balance: **${senderData.balance.toLocaleString()} Luxa**`, ephemeral: true });
+        }
+
+        removeCredits(member.id, amount);
         addCredits(targetUser.id, amount, member.user.tag);
         return interaction.reply({ content: `💸 **${member}** ssift **${amount.toLocaleString()} Luxa** l **${targetUser}** b-najah!` });
     }
