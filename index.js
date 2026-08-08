@@ -20,10 +20,17 @@ const client = new Client({
 // ================= CONFIGURATION =================
 const CONFIG = {
     TOKEN: process.env.DISCORD_TOKEN,
-    CLIENT_ID: process.env.CLIENT_ID,
+    CLIENT_ID: process.env.CLIENT_ID || "1535348813856772248",
+    BOT_ID: "1535348813856772248",
+    TAX_OWNER_ID: "1241496820455313533",
+    TAX_PERCENT: 0.035, // 3.5%
+
     VERIFIED_ROLE_ID: "1535350311068242010",
     LOGS_CHANNEL_ID: "1535351343529594950",
     SPIN_CATEGORY_ID: "1535350881111769148",
+
+    // Zit hna l-IDs dial les channels li mssmo7 fihom casino (ila kano khawya kyt3tabr gga3 les channels mssmohin)
+    CASINO_CHANNELS_IDS: [1535751054233440347, 1535750990710444093, 1535750875471945909], 
 
     LINE_IMAGE_URL: "https://cdn.discordapp.com/attachments/1315665568228966410/1535362669421264946/line_Skill_Tower.gif",
     THUMBNAIL_URL: "https://cdn.discordapp.com/attachments/1315665568228966410/1535380733198213140/LOGO_GIF_IWTH_SAKURA_FLOWERS.gif", 
@@ -55,6 +62,7 @@ let SECURITY_MODE = true;
 
 const pendingPurges = new Map();
 const usedSpins = new Map();
+const activeCasinoGames = new Set(); // Multi-game lock to prevent exploits
 
 // ================= DATABASE (JSON FILE STORAGE) =================
 const DB_FILE = path.join(__dirname, 'userProfiles.json');
@@ -112,14 +120,23 @@ function removeCredits(userId, amount) {
     saveDatabase();
 }
 
-function parseRewardValue(label) {
-    const match = label.match(/^(\d+)([MK])?$/i);
-    if (!match) return 0;
-    const num = parseInt(match[1], 10);
-    const unit = match[2] ? match[2].toUpperCase() : '';
-    if (unit === 'M') return num * 1_000_000;
-    if (unit === 'K') return num * 1_000;
-    return num;
+// Format Input Function (1m -> 1,000,000 / 1k -> 1,000)
+function parseAmount(input) {
+    if (typeof input === 'number') return input;
+    if (!input || typeof input !== 'string') return null;
+
+    const cleaned = input.trim().toLowerCase();
+    const match = cleaned.match(/^(\d+(?:\.\d+)?)\s*([kmb])?$/);
+    if (!match) return null;
+
+    let num = parseFloat(match[1]);
+    const unit = match[2];
+
+    if (unit === 'k') num *= 1_000;
+    else if (unit === 'm') num *= 1_000_000;
+    else if (unit === 'b') num *= 1_000_000_000;
+
+    return Math.floor(num);
 }
 
 function hasCommandRole(member, commandName) {
@@ -167,6 +184,11 @@ function parseDuration(str) {
     return null;
 }
 
+function isCasinoChannel(channelId) {
+    if (!CONFIG.CASINO_CHANNELS_IDS || CONFIG.CASINO_CHANNELS_IDS.length === 0) return true;
+    return CONFIG.CASINO_CHANNELS_IDS.includes(channelId);
+}
+
 // ================= BOT READY & SLASH COMMANDS =================
 client.once('ready', async () => {
     loadDatabase();
@@ -180,9 +202,25 @@ client.once('ready', async () => {
         new SlashCommandBuilder().setName('invites').setDescription('Check your invite count & available spins').addUserOption(opt => opt.setName('user').setDescription('User to check')),
         new SlashCommandBuilder().setName('points').setDescription('Check your remaining Spin points').addUserOption(opt => opt.setName('user').setDescription('User to check')),
         new SlashCommandBuilder().setName('profile').setDescription('Check your credits profile, peak & level').addUserOption(opt => opt.setName('user').setDescription('User to check')),
-        new SlashCommandBuilder().setName('transfer').setDescription('Transfer credits to another user').addUserOption(opt => opt.setName('user').setDescription('Target User').setRequired(true)).addIntegerOption(opt => opt.setName('amount').setDescription('Amount of credits').setRequired(true)),
-        new SlashCommandBuilder().setName('givecredits').setDescription('Give credits to a user (Owner Only)').addStringOption(opt => opt.setName('userid').setDescription('Target User ID or Mention').setRequired(true)).addIntegerOption(opt => opt.setName('amount').setDescription('Amount of credits').setRequired(true)),
-        new SlashCommandBuilder().setName('removecredits').setDescription('Remove credits from a user (Owner Only)').addStringOption(opt => opt.setName('userid').setDescription('Target User ID or Mention').setRequired(true)).addIntegerOption(opt => opt.setName('amount').setDescription('Amount of credits').setRequired(true)),
+        
+        // Transfers & Credits
+        new SlashCommandBuilder().setName('sendluxa').setDescription('Transfer credits securely').addUserOption(opt => opt.setName('user').setDescription('Target User').setRequired(true)).addStringOption(opt => opt.setName('amount').setDescription('e.g. 100k, 1m, 5000').setRequired(true)),
+        new SlashCommandBuilder().setName('transfer').setDescription('Transfer credits to another user').addUserOption(opt => opt.setName('user').setDescription('Target User').setRequired(true)).addStringOption(opt => opt.setName('amount').setDescription('Amount e.g 1m').setRequired(true)),
+        new SlashCommandBuilder().setName('givecredits').setDescription('Give credits to a user (Owner Only)').addStringOption(opt => opt.setName('userid').setDescription('Target User ID or Mention').setRequired(true)).addStringOption(opt => opt.setName('amount').setDescription('Amount of credits e.g 10m').setRequired(true)),
+        new SlashCommandBuilder().setName('removecredits').setDescription('Remove credits from a user (Owner Only)').addStringOption(opt => opt.setName('userid').setDescription('Target User ID or Mention').setRequired(true)).addStringOption(opt => opt.setName('amount').setDescription('Amount of credits e.g 10m').setRequired(true)),
+
+        // Help & Utility
+        new SlashCommandBuilder().setName('idbot').setDescription('Get bot ID & deposit instructions'),
+        new SlashCommandBuilder().setName('tutorial').setDescription('How to deposit and play games'),
+
+        // Casino Games (5 Modes)
+        new SlashCommandBuilder().setName('blackjack').setDescription('Play Blackjack (Multiplier 2.5x)').addStringOption(opt => opt.setName('bet').setDescription('Amount to bet (e.g. 100k, 1m)').setRequired(true)),
+        new SlashCommandBuilder().setName('roulette').setDescription('Play Roulette').addStringOption(opt => opt.setName('bet').setDescription('Amount to bet').setRequired(true)).addStringOption(opt => opt.setName('space').setDescription('red, black, green, even, odd, or number (0-36)').setRequired(true)),
+        new SlashCommandBuilder().setName('crash').setDescription('Play Crash Game').addStringOption(opt => opt.setName('bet').setDescription('Amount to bet').setRequired(true)),
+        new SlashCommandBuilder().setName('mines').setDescription('Play Mines').addStringOption(opt => opt.setName('bet').setDescription('Amount to bet').setRequired(true)).addIntegerOption(opt => opt.setName('bombs').setDescription('Number of bombs (1-24)').setRequired(false)),
+        new SlashCommandBuilder().setName('coinflip').setDescription('Flip a coin').addStringOption(opt => opt.setName('bet').setDescription('Amount to bet').setRequired(true)).addStringOption(opt => opt.setName('side').setDescription('heads or tails').setRequired(true).addChoices({ name: 'Heads', value: 'heads' }, { name: 'Tails', value: 'tails' })),
+
+        // Admin & Moderation
         new SlashCommandBuilder().setName('say').setDescription('Send embed message').addStringOption(opt => opt.setName('text').setDescription('Message').setRequired(true)),
         new SlashCommandBuilder().setName('come').setDescription('Summon user').addUserOption(opt => opt.setName('user').setDescription('Target User').setRequired(true)),
         new SlashCommandBuilder().setName('ban').setDescription('Ban user').addUserOption(opt => opt.setName('user').setDescription('Target').setRequired(true)).addStringOption(opt => opt.setName('reason').setDescription('Reason')),
@@ -196,6 +234,82 @@ client.once('ready', async () => {
         console.log('✅ Commands Registered');
     } catch (err) {
         console.error('Error registering commands:', err);
+    }
+});
+
+// ================= MESSAGE CREATE LISTENERS (Tax, Chat Commands & Profile) =================
+client.on('messageCreate', async (message) => {
+    if (message.author.bot || !message.guild) return;
+
+    // 1. Check Profile when user types 'p' f chat
+    if (message.content.trim().toLowerCase() === 'p') {
+        const data = getUserData(message.author.id);
+        const level = Math.floor(data.balance / 1_000_000) + 1;
+
+        const profEmbed = new EmbedBuilder()
+            .setColor('#00d2d3')
+            .setTitle(`💳 Profile & Credits - ${message.author.username}`)
+            .setThumbnail(message.author.displayAvatarURL())
+            .addFields(
+                { name: '💰 Current Balance', value: `\`${data.balance.toLocaleString()} Luxa\``, inline: true },
+                { name: '🚀 Peak Credits', value: `\`${data.peak.toLocaleString()} Luxa\``, inline: true },
+                { name: '⭐ Level', value: `\`Lvl ${level}\``, inline: true },
+                { name: '🎁 Last Sent By', value: `\`${data.lastSender}\``, inline: false }
+            )
+            .setTimestamp();
+
+        return message.reply({ embeds: [profEmbed] });
+    }
+
+    // 2. Text command 'c @user amount' transfer shortcut
+    if (message.content.startsWith('c ')) {
+        const parts = message.content.split(/\s+/);
+        if (parts.length >= 3) {
+            const targetUser = message.mentions.users.first();
+            const rawAmount = parts[2];
+            const amount = parseAmount(rawAmount);
+
+            if (!targetUser) return message.reply('❌ Taggi user s'hih! Format: `c @user 1m`');
+            if (targetUser.id === message.author.id) return message.reply('❌ Ma-ymknch t-sift credits l rasak!');
+            if (!amount || amount <= 0) return message.reply('❌ Amount ghlat!');
+
+            const senderData = getUserData(message.author.id);
+            if (senderData.balance < amount) {
+                return message.reply(`❌ Ma-3ndkch credits kfya! Balance: **${senderData.balance.toLocaleString()}**`);
+            }
+
+            removeCredits(message.author.id, amount);
+            addCredits(targetUser.id, amount, message.author.tag);
+
+            return message.reply(`💸 **${message.author}** ssift **${amount.toLocaleString()} Luxa** l **${targetUser}** b-najah!`);
+        }
+    }
+
+    // 3. TAX SYSTEM & DEPOSIT DETECTOR (If user sends currency to Bot ID)
+    if (message.content.includes(CONFIG.BOT_ID) || message.mentions.users.has(CONFIG.BOT_ID)) {
+        // Look for potential credit numbers in the text message
+        const match = message.content.match(/(\d+(?:\.\d+)?\s*[kmb]?)/i);
+        if (match) {
+            const parsedAmount = parseAmount(match[0]);
+            if (parsedAmount && parsedAmount > 0) {
+                const tax = Math.floor(parsedAmount * CONFIG.TAX_PERCENT);
+                const finalAmount = parsedAmount - tax;
+
+                // Credit Tax to Owner
+                addCredits(CONFIG.TAX_OWNER_ID, tax, `Tax from ${message.author.tag}`);
+                // Credit remainder to user
+                addCredits(message.author.id, finalAmount, 'Deposit System');
+
+                return message.reply({
+                    embeds: [
+                        new EmbedBuilder()
+                            .setColor('#57F287')
+                            .setTitle('📥 Deposit Confirmed & Tax Applied')
+                            .setDescription(`✅ **${parsedAmount.toLocaleString()} Luxa** Recieved!\n\n• 💸 **Tax (3.5%):** \`${tax.toLocaleString()}\` sent to Owner.\n• 💰 **Added to Balance:** \`+${finalAmount.toLocaleString()} Luxa\``)
+                    ]
+                });
+            }
+        }
     }
 });
 
@@ -246,9 +360,31 @@ client.on('interactionCreate', async (interaction) => {
     if (interaction.isChatInputCommand()) {
         const { commandName, options, guild, member, channel } = interaction;
 
-        const publicCmds = ['spin', 'spin5', 'invites', 'points', 'profile', 'transfer'];
+        const publicCmds = ['spin', 'spin5', 'invites', 'points', 'profile', 'transfer', 'sendluxa', 'idbot', 'tutorial', 'blackjack', 'roulette', 'crash', 'mines', 'coinflip'];
         if (!publicCmds.includes(commandName) && !hasCommandRole(member, commandName)) {
             return interaction.reply({ content: '❌ MA3NDKCH ROLE BCH T-ST3ML HAD L-COMMAND!', ephemeral: true });
+        }
+
+        // Restriction Check for Casino Channels
+        const casinoCmds = ['blackjack', 'roulette', 'crash', 'mines', 'coinflip'];
+        if (casinoCmds.includes(commandName) && !isCasinoChannel(channel.id)) {
+            return interaction.reply({ content: '❌ Had l-command mssmouha ghir f les channels dial Casino!', ephemeral: true });
+        }
+
+        // HELP & ID BOT COMMANDS
+        if (commandName === 'idbot' || commandName === 'tutorial') {
+            const embed = new EmbedBuilder()
+                .setColor('#00d2d3')
+                .setTitle('ℹ️ Casino & Bot Deposit Guide')
+                .setDescription(
+                    `🤖 **Bot ID:** \`${CONFIG.BOT_ID}\`\n\n` +
+                    `**How to deposit Luxa to play:**\n` +
+                    `1️⃣ Sift Luxa l l-Bot (ex: \`/sendluxa user:${CONFIG.BOT_ID} amount:1m\`)\n` +
+                    `2️⃣ Tax dial 3.5% kat mchi l-Owner w l-baqi ky-idaf l balance dialk f-bot.\n` +
+                    `3️⃣ Kat qdr tl3ab b \`/blackjack\`, \`/roulette\`, \`/crash\`, \`/mines\`, aw \`/coinflip\`!\n` +
+                    `4️⃣ Kat chouf balance dialk b \`/profile\` aw ktb \`p\` f chat!`
+                );
+            return interaction.reply({ embeds: [embed] });
         }
 
         if (commandName === 'profile') {
@@ -261,8 +397,8 @@ client.on('interactionCreate', async (interaction) => {
                 .setTitle(`💳 Profile & Credits - ${targetUser.username}`)
                 .setThumbnail(targetUser.displayAvatarURL())
                 .addFields(
-                    { name: '💰 Current Credits', value: `\`${data.balance.toLocaleString()} Credits\``, inline: true },
-                    { name: '🚀 Peak Credits', value: `\`${data.peak.toLocaleString()} Credits\``, inline: true },
+                    { name: '💰 Current Balance', value: `\`${data.balance.toLocaleString()} Luxa\``, inline: true },
+                    { name: '🚀 Peak Credits', value: `\`${data.peak.toLocaleString()} Luxa\``, inline: true },
                     { name: '⭐ Level', value: `\`Lvl ${level}\``, inline: true },
                     { name: '🎁 Last Sent By', value: `\`${data.lastSender}\``, inline: false }
                 )
@@ -274,10 +410,10 @@ client.on('interactionCreate', async (interaction) => {
         if (commandName === 'givecredits') {
             const rawInput = options.getString('userid');
             const targetId = rawInput.replace(/[^0-9]/g, '');
-            const amount = options.getInteger('amount');
+            const amount = parseAmount(options.getString('amount'));
 
             if (!targetId) return interaction.reply({ content: '❌ User ID ma-saḥiḥch!', ephemeral: true });
-            if (amount <= 0) return interaction.reply({ content: '❌ Amount khass ykon kbr mn 0!', ephemeral: true });
+            if (!amount || amount <= 0) return interaction.reply({ content: '❌ Amount ghlat!', ephemeral: true });
 
             addCredits(targetId, amount, member.user.tag);
 
@@ -287,21 +423,21 @@ client.on('interactionCreate', async (interaction) => {
                 .addFields(
                     { name: 'Admin', value: `${member.user.tag}`, inline: true },
                     { name: 'Target User', value: `<@${targetId}> (\`${targetId}\`)`, inline: true },
-                    { name: 'Amount Added', value: `\`+${amount.toLocaleString()} Credits\``, inline: true }
+                    { name: 'Amount Added', value: `\`+${amount.toLocaleString()} Luxa\``, inline: true }
                 )
                 .setTimestamp();
             await sendLog(guild, logEmbed);
 
-            return interaction.reply({ content: `✅ **+${amount.toLocaleString()} Credits** tzadat l <@${targetId}>!`, ephemeral: true });
+            return interaction.reply({ content: `✅ **+${amount.toLocaleString()} Luxa** tzadat l <@${targetId}>!`, ephemeral: true });
         }
 
         if (commandName === 'removecredits') {
             const rawInput = options.getString('userid');
             const targetId = rawInput.replace(/[^0-9]/g, '');
-            const amount = options.getInteger('amount');
+            const amount = parseAmount(options.getString('amount'));
 
             if (!targetId) return interaction.reply({ content: '❌ User ID ma-saḥiḥch!', ephemeral: true });
-            if (amount <= 0) return interaction.reply({ content: '❌ Amount khass ykon kbr mn 0!', ephemeral: true });
+            if (!amount || amount <= 0) return interaction.reply({ content: '❌ Amount ghlat!', ephemeral: true });
 
             removeCredits(targetId, amount);
 
@@ -311,27 +447,41 @@ client.on('interactionCreate', async (interaction) => {
                 .addFields(
                     { name: 'Admin', value: `${member.user.tag}`, inline: true },
                     { name: 'Target User', value: `<@${targetId}> (\`${targetId}\`)`, inline: true },
-                    { name: 'Amount Removed', value: `\`-${amount.toLocaleString()} Credits\``, inline: true }
+                    { name: 'Amount Removed', value: `\`-${amount.toLocaleString()} Luxa\``, inline: true }
                 )
                 .setTimestamp();
             await sendLog(guild, logEmbed);
 
-            return interaction.reply({ content: `✅ **-${amount.toLocaleString()} Credits** t-t3ydat mn <@${targetId}>!`, ephemeral: true });
+            return interaction.reply({ content: `✅ **-${amount.toLocaleString()} Luxa** t-t3ydat mn <@${targetId}>!`, ephemeral: true });
         }
 
-        if (commandName === 'transfer') {
+        if (commandName === 'transfer' || commandName === 'sendluxa') {
             const targetUser = options.getUser('user');
-            const amount = options.getInteger('amount');
+            const amount = parseAmount(options.getString('amount'));
 
             if (targetUser.id === member.id) return interaction.reply({ content: '❌ Ma-ymknch t-sift credits l rasak!', ephemeral: true });
-            if (amount <= 0) return interaction.reply({ content: '❌ Amount khass ykon kbr mn 0!', ephemeral: true });
+            if (!amount || amount <= 0) return interaction.reply({ content: '❌ Amount ghlat!', ephemeral: true });
 
             const senderData = getUserData(member.id);
             if (senderData.balance < amount) {
-                return interaction.reply({ content: `❌ Ma-3ndkch credits kfya! Current Balance: **${senderData.balance.toLocaleString()}**`, ephemeral: true });
+                return interaction.reply({ content: `❌ Ma-3ndkch credits kfya! Balance: **${senderData.balance.toLocaleString()} Luxa**`, ephemeral: true });
             }
 
             removeCredits(member.id, amount);
+
+            // TAX applies if sent directly to bot
+            if (targetUser.id === CONFIG.BOT_ID) {
+                const tax = Math.floor(amount * CONFIG.TAX_PERCENT);
+                const finalAmount = amount - tax;
+
+                addCredits(CONFIG.TAX_OWNER_ID, tax, `Tax from ${member.user.tag}`);
+                addCredits(member.id, finalAmount, 'Deposit to Bot');
+
+                return interaction.reply({
+                    content: `📥 **Deposit Successful!**\n• Amount: **${amount.toLocaleString()} Luxa**\n• Tax (3.5%): **${tax.toLocaleString()} Luxa** sent to Owner\n• Added to your bot balance: **+${finalAmount.toLocaleString()} Luxa**`
+                });
+            }
+
             addCredits(targetUser.id, amount, member.user.tag);
 
             const logEmbed = new EmbedBuilder()
@@ -340,14 +490,359 @@ client.on('interactionCreate', async (interaction) => {
                 .addFields(
                     { name: 'From', value: `${member.user.tag}`, inline: true },
                     { name: 'To', value: `${targetUser.tag}`, inline: true },
-                    { name: 'Amount', value: `\`${amount.toLocaleString()} Credits\``, inline: true }
+                    { name: 'Amount', value: `\`${amount.toLocaleString()} Luxa\``, inline: true }
                 )
                 .setTimestamp();
             await sendLog(guild, logEmbed);
 
-            return interaction.reply({ content: `💸 **${member}** ssift **${amount.toLocaleString()} Credits** l **${targetUser}** b-najah!` });
+            return interaction.reply({ content: `💸 **${member}** ssift **${amount.toLocaleString()} Luxa** l **${targetUser}** b-najah!` });
         }
 
+        // =========================================================================
+        // ============================ CASINO MODES ===============================
+        // =========================================================================
+
+        // 1. BLACKJACK (Multiplier 2.5x)
+        if (commandName === 'blackjack') {
+            const bet = parseAmount(options.getString('bet'));
+            if (!bet || bet <= 0) return interaction.reply({ content: '❌ Bet amount ghlat!', ephemeral: true });
+
+            const userData = getUserData(member.id);
+            if (userData.balance < bet) return interaction.reply({ content: `❌ Ma-3ndkch balance kfya! Balance dialk: **${userData.balance.toLocaleString()} Luxa**`, ephemeral: true });
+
+            if (activeCasinoGames.has(member.id)) return interaction.reply({ content: '❌ 3ndk game active khra, kmlha hyya l'owla!', ephemeral: true });
+            activeCasinoGames.add(member.id);
+
+            removeCredits(member.id, bet);
+
+            const deck = [2,3,4,5,6,7,8,9,10,10,10,10,11];
+            const getCard = () => deck[Math.floor(Math.random() * deck.length)];
+
+            let playerHand = [getCard(), getCard()];
+            let dealerHand = [getCard(), getCard()];
+
+            const calcScore = (hand) => {
+                let score = hand.reduce((a, b) => a + b, 0);
+                if (score > 21 && hand.includes(11)) {
+                    score -= 10;
+                }
+                return score;
+            };
+
+            const buildEmbed = (finished = false) => {
+                const pScore = calcScore(playerHand);
+                const dScore = calcScore(dealerHand);
+                return new EmbedBuilder()
+                    .setColor('#f1c40f')
+                    .setTitle(`🃏 Blackjack (Bet: ${bet.toLocaleString()} Luxa)`)
+                    .addFields(
+                        { name: '👤 Your Cards', value: `${playerHand.join(', ')} (Total: **${pScore}**)`, inline: true },
+                        { name: '🤖 Dealer Cards', value: finished ? `${dealerHand.join(', ')} (Total: **${dScore}**)` : `${dealerHand[0]}, ?`, inline: true }
+                    );
+            };
+
+            const row = new ActionRowBuilder().addComponents(
+                new ButtonBuilder().setCustomId('bj_hit').setLabel('Hit 🃏').setStyle(ButtonStyle.Primary),
+                new ButtonBuilder().setCustomId('bj_stand').setLabel('Stand 🛑').setStyle(ButtonStyle.Success)
+            );
+
+            const msg = await interaction.reply({ embeds: [buildEmbed()], components: [row], fetchReply: true });
+
+            const collector = msg.createMessageComponentCollector({ time: 60000 });
+
+            collector.on('collect', async (i) => {
+                if (i.user.id !== member.id) return i.reply({ content: 'Machi dyalk had l-game!', ephemeral: true });
+
+                if (i.customId === 'bj_hit') {
+                    playerHand.push(getCard());
+                    if (calcScore(playerHand) > 21) {
+                        collector.stop('bust');
+                    } else {
+                        await i.update({ embeds: [buildEmbed()] });
+                    }
+                } else if (i.customId === 'bj_stand') {
+                    collector.stop('stand');
+                }
+            });
+
+            collector.on('end', async (_, reason) => {
+                activeCasinoGames.delete(member.id);
+
+                let pScore = calcScore(playerHand);
+                let dScore = calcScore(dealerHand);
+
+                while (dScore < 17 && reason === 'stand') {
+                    dealerHand.push(getCard());
+                    dScore = calcScore(dealerHand);
+                }
+
+                let resultMsg = '';
+                if (reason === 'bust' || pScore > 21) {
+                    resultMsg = `❌ **Bust! Khsrti ${bet.toLocaleString()} Luxa.**`;
+                } else if (dScore > 21 || pScore > dScore) {
+                    const winAmount = Math.floor(bet * 2.5);
+                    addCredits(member.id, winAmount, 'Blackjack Win');
+                    resultMsg = `🎉 **Mbrooook! Rbhti ${winAmount.toLocaleString()} Luxa! (2.5x)**`;
+                } else if (pScore === dScore) {
+                    addCredits(member.id, bet, 'Blackjack Tie');
+                    resultMsg = `⚖️ **Egalite! Rj3at lik ${bet.toLocaleString()} Luxa.**`;
+                } else {
+                    resultMsg = `❌ **Khsrti! Dealer rbeh b ${dScore}.**`;
+                }
+
+                const finalEmbed = buildEmbed(true).setDescription(resultMsg);
+                await msg.edit({ embeds: [finalEmbed], components: [] }).catch(() => {});
+            });
+
+            return;
+        }
+
+        // 2. ROULETTE
+        if (commandName === 'roulette') {
+            const bet = parseAmount(options.getString('bet'));
+            const space = options.getString('space').toLowerCase();
+
+            if (!bet || bet <= 0) return interaction.reply({ content: '❌ Bet ghlat!', ephemeral: true });
+            const userData = getUserData(member.id);
+            if (userData.balance < bet) return interaction.reply({ content: `❌ Ma-3ndkch balance kfya!`, ephemeral: true });
+
+            removeCredits(member.id, bet);
+
+            const spin = Math.floor(Math.random() * 37);
+            const redNumbers = [1,3,5,7,9,12,14,16,18,19,21,23,25,27,30,32,34,36];
+            let color = spin === 0 ? 'green' : redNumbers.includes(spin) ? 'red' : 'black';
+
+            let won = false;
+            let multiplier = 2;
+
+            if (space === color) won = true;
+            if (space === 'even' && spin !== 0 && spin % 2 === 0) won = true;
+            if (space === 'odd' && spin !== 0 && spin % 2 !== 0) won = true;
+            if (!isNaN(parseInt(space)) && parseInt(space) === spin) {
+                won = true;
+                multiplier = 36;
+            }
+            if (space === 'green' && spin === 0) multiplier = 14;
+
+            let resultEmbed = new EmbedBuilder()
+                .setTitle('🎰 Roulette Result')
+                .addFields(
+                    { name: 'L-Ra3qm:', value: `**${spin}** (${color.toUpperCase()})`, inline: true },
+                    { name: 'Bet dialk:', value: `${space}`, inline: true }
+                );
+
+            if (won) {
+                const winAmount = bet * multiplier;
+                addCredits(member.id, winAmount, 'Roulette Win');
+                resultEmbed.setColor('#57F287').setDescription(`🎉 **Mbrooook! Rbhti ${winAmount.toLocaleString()} Luxa!**`);
+            } else {
+                resultEmbed.setColor('#ED4245').setDescription(`❌ **Khsrti ${bet.toLocaleString()} Luxa!**`);
+            }
+
+            return interaction.reply({ embeds: [resultEmbed] });
+        }
+
+        // 3. CRASH
+        if (commandName === 'crash') {
+            const bet = parseAmount(options.getString('bet'));
+            if (!bet || bet <= 0) return interaction.reply({ content: '❌ Bet ghlat!', ephemeral: true });
+
+            const userData = getUserData(member.id);
+            if (userData.balance < bet) return interaction.reply({ content: `❌ Balance ma kafyach!`, ephemeral: true });
+
+            if (activeCasinoGames.has(member.id)) return interaction.reply({ content: '❌ 3ndk game active!', ephemeral: true });
+            activeCasinoGames.add(member.id);
+
+            removeCredits(member.id, bet);
+
+            let currentMultiplier = 1.0;
+            const crashPoint = (Math.random() * 3.5 + 1.1).toFixed(2);
+
+            const row = new ActionRowBuilder().addComponents(
+                new ButtonBuilder().setCustomId('crash_cashout').setLabel('Cashout 💰').setStyle(ButtonStyle.Success)
+            );
+
+            const embed = new EmbedBuilder()
+                .setColor('#f39c12')
+                .setTitle('🚀 Crash Game')
+                .setDescription(`Current Multiplier: **1.00x**\nBet: **${bet.toLocaleString()} Luxa**`);
+
+            const msg = await interaction.reply({ embeds: [embed], components: [row], fetchReply: true });
+
+            let cashedOut = false;
+
+            const collector = msg.createMessageComponentCollector({ time: 15000 });
+
+            const interval = setInterval(async () => {
+                currentMultiplier = parseFloat((currentMultiplier + 0.2).toFixed(2));
+                if (currentMultiplier >= crashPoint) {
+                    clearInterval(interval);
+                    collector.stop('crashed');
+                } else if (!cashedOut) {
+                    await msg.edit({
+                        embeds: [new EmbedBuilder().setColor('#f39c12').setTitle('🚀 Crash Game').setDescription(`Current Multiplier: **${currentMultiplier}x**\nBet: **${bet.toLocaleString()} Luxa**`)]
+                    }).catch(() => {});
+                }
+            }, 1200);
+
+            collector.on('collect', async (i) => {
+                if (i.user.id !== member.id) return i.reply({ content: 'Machi dyalk!', ephemeral: true });
+                cashedOut = true;
+                clearInterval(interval);
+                collector.stop('cashout');
+            });
+
+            collector.on('end', async (_, reason) => {
+                activeCasinoGames.delete(member.id);
+                clearInterval(interval);
+
+                if (reason === 'cashout') {
+                    const winAmount = Math.floor(bet * currentMultiplier);
+                    addCredits(member.id, winAmount, 'Crash Win');
+                    await msg.edit({
+                        embeds: [new EmbedBuilder().setColor('#57F287').setTitle('🚀 Cashout Successful!').setDescription(`🎉 Rbhti **${winAmount.toLocaleString()} Luxa** (Multiplier: **${currentMultiplier}x**)`)],
+                        components: []
+                    }).catch(() => {});
+                } else {
+                    await msg.edit({
+                        embeds: [new EmbedBuilder().setColor('#ED4245').setTitle('💥 CRASHED!').setDescription(`❌ Rocket tfrq3at f **${crashPoint}x**! Khsrti ${bet.toLocaleString()} Luxa.`)],
+                        components: []
+                    }).catch(() => {});
+                }
+            });
+
+            return;
+        }
+
+        // 4. MINES
+        if (commandName === 'mines') {
+            const bet = parseAmount(options.getString('bet'));
+            const bombCount = options.getInteger('bombs') || 3;
+
+            if (!bet || bet <= 0) return interaction.reply({ content: '❌ Bet ghlat!', ephemeral: true });
+            if (bombCount < 1 || bombCount > 24) return interaction.reply({ content: '❌ Bombs khass ikono bin 1 w 24!', ephemeral: true });
+
+            const userData = getUserData(member.id);
+            if (userData.balance < bet) return interaction.reply({ content: `❌ Balance ma kafyach!`, ephemeral: true });
+
+            if (activeCasinoGames.has(member.id)) return interaction.reply({ content: '❌ 3ndk game active!', ephemeral: true });
+            activeCasinoGames.add(member.id);
+
+            removeCredits(member.id, bet);
+
+            let grid = Array(25).fill('gem');
+            let bombPositions = new Set();
+            while (bombPositions.size < bombCount) {
+                bombPositions.add(Math.floor(Math.random() * 25));
+            }
+            bombPositions.forEach(pos => grid[pos] = 'bomb');
+
+            let revealed = Array(25).fill(false);
+            let gemsFound = 0;
+            let multiplier = 1.0;
+
+            const buildRows = (disableAll = false) => {
+                const rows = [];
+                for (let i = 0; i < 5; i++) {
+                    const row = new ActionRowBuilder();
+                    for (let j = 0; j < 5; j++) {
+                        const idx = i * 5 + j;
+                        const btn = new ButtonBuilder().setCustomId(`mine_${idx}`);
+
+                        if (revealed[idx] || disableAll) {
+                            btn.setDisabled(true);
+                            if (grid[idx] === 'bomb') btn.setLabel('💣').setStyle(ButtonStyle.Danger);
+                            else btn.setLabel('💎').setStyle(ButtonStyle.Success);
+                        } else {
+                            btn.setLabel('❓').setStyle(ButtonStyle.Secondary);
+                        }
+                        row.addComponents(btn);
+                    }
+                    rows.push(row);
+                }
+                
+                const controlRow = new ActionRowBuilder().addComponents(
+                    new ButtonBuilder().setCustomId('mine_cashout').setLabel(`Cashout (${Math.floor(bet * multiplier)} Luxa)`).setStyle(ButtonStyle.Primary).setDisabled(gemsFound === 0 || disableAll)
+                );
+                rows.push(controlRow);
+                return rows;
+            };
+
+            const msg = await interaction.reply({
+                content: `💣 **Mines Game** | Bet: **${bet.toLocaleString()} Luxa** | Multiplier: **${multiplier.toFixed(2)}x**`,
+                components: buildRows(),
+                fetchReply: true
+            });
+
+            const collector = msg.createMessageComponentCollector({ time: 60000 });
+
+            collector.on('collect', async (i) => {
+                if (i.user.id !== member.id) return i.reply({ content: 'Machi dyalk!', ephemeral: true });
+
+                if (i.customId === 'mine_cashout') {
+                    collector.stop('cashout');
+                    return;
+                }
+
+                const idx = parseInt(i.customId.replace('mine_', ''));
+                revealed[idx] = true;
+
+                if (grid[idx] === 'bomb') {
+                    collector.stop('bomb');
+                } else {
+                    gemsFound++;
+                    multiplier += 0.25;
+                    await i.update({
+                        content: `💣 **Mines Game** | Gems: **${gemsFound}** | Multiplier: **${multiplier.toFixed(2)}x**`,
+                        components: buildRows()
+                    });
+                }
+            });
+
+            collector.on('end', async (_, reason) => {
+                activeCasinoGames.delete(member.id);
+
+                if (reason === 'cashout') {
+                    const winAmount = Math.floor(bet * multiplier);
+                    addCredits(member.id, winAmount, 'Mines Win');
+                    await msg.edit({
+                        content: `🎉 **Cashout Successful!** Rbhti **${winAmount.toLocaleString()} Luxa**!`,
+                        components: buildRows(true)
+                    }).catch(() => {});
+                } else {
+                    await msg.edit({
+                        content: `💥 **BOOM! Tfrq3at fik qanboula!** Khsrti ${bet.toLocaleString()} Luxa.`,
+                        components: buildRows(true)
+                    }).catch(() => {});
+                }
+            });
+
+            return;
+        }
+
+        // 5. COINFLIP
+        if (commandName === 'coinflip') {
+            const bet = parseAmount(options.getString('bet'));
+            const side = options.getString('side');
+
+            if (!bet || bet <= 0) return interaction.reply({ content: '❌ Bet ghlat!', ephemeral: true });
+
+            const userData = getUserData(member.id);
+            if (userData.balance < bet) return interaction.reply({ content: `❌ Balance ma kafyach!`, ephemeral: true });
+
+            removeCredits(member.id, bet);
+
+            const result = Math.random() < 0.5 ? 'heads' : 'tails';
+            if (result === side) {
+                const winAmount = bet * 2;
+                addCredits(member.id, winAmount, 'Coinflip Win');
+                return interaction.reply(`🪙 Coin landed on **${result.toUpperCase()}**! 🎉 Rbhti **${winAmount.toLocaleString()} Luxa**!`);
+            } else {
+                return interaction.reply(`🪙 Coin landed on **${result.toUpperCase()}**! ❌ Khsrti **${bet.toLocaleString()} Luxa**.`);
+            }
+        }
+
+        // ================= STANDARD COMMANDS =================
         if (commandName === 'spin' || commandName === 'spin5') {
             if (channel.parentId !== CONFIG.SPIN_CATEGORY_ID) {
                 return interaction.reply({ content: '❌ Kat-st3ml had l-command ghir f-Ticket d Spin!', ephemeral: true });
@@ -375,7 +870,7 @@ client.on('interactionCreate', async (interaction) => {
                 : [{ label: '3M', weight: 60 }, { label: '5M', weight: 30 }, { label: '10M', weight: 10 }];
 
             const wonLabel = getWeightedRandom(rewards);
-            const rewardCredits = parseRewardValue(wonLabel);
+            const rewardCredits = parseAmount(wonLabel);
 
             addCredits(member.id, rewardCredits, 'Spin Wheel');
 
@@ -385,14 +880,14 @@ client.on('interactionCreate', async (interaction) => {
                 .addFields(
                     { name: 'User', value: `${member.user.tag}`, inline: true },
                     { name: 'Type', value: isSuper ? 'Super Spin (5)' : 'Spin (1)', inline: true },
-                    { name: 'Credits Won', value: `\`+${rewardCredits.toLocaleString()} Credits\``, inline: true }
+                    { name: 'Credits Won', value: `\`+${rewardCredits.toLocaleString()} Luxa\``, inline: true }
                 )
                 .setTimestamp();
             await sendLog(guild, logEmbed);
 
             return interaction.editReply({ 
                 content: `🎰 **Spin Result:** Mabrouk ${member}! Reb7ti **${wonLabel}**! 🎉\n` +
-                         `💳 **+${rewardCredits.toLocaleString()} Credits** tzadat f l'account dialk automatiquement!\n` +
+                         `💳 **+${rewardCredits.toLocaleString()} Luxa** tzadat f l'account dialk automatiquement!\n` +
                          `*(Remaining Available Spins: ${availableSpins - reqInvites})*` 
             });
         }
@@ -627,55 +1122,6 @@ client.on('interactionCreate', async (interaction) => {
             await interaction.reply({ content: `🔒 Closing ticket. Reason: **${reason}**` });
             setTimeout(() => interaction.channel.delete().catch(() => {}), 4000);
         }
-    }
-});
-
-// ================= CHAT COMMANDS =================
-client.on('messageCreate', async (message) => {
-    if (message.author.bot || !message.guild) return;
-
-    const content = message.content.toLowerCase().trim();
-
-    if (content === 'bisous' || content === 'bisou') {
-        return message.channel.send('💋💋 **BOUSSA KBIRA LIK!** 💋💋');
-    }
-
-    if (content === 'line') {
-        await message.delete().catch(() => {});
-        return message.channel.send(CONFIG.LINE_IMAGE_URL);
-    }
-
-    if (content === 'sd') {
-        if (!hasCommandRole(message.member, 'setup')) return;
-        await message.channel.permissionOverwrites.edit(message.guild.roles.everyone, { SendMessages: false });
-        return message.channel.send('🔒 Channel status: **CLOSED**');
-    }
-
-    if (content === '7l') {
-        if (!hasCommandRole(message.member, 'setup')) return;
-        await message.channel.permissionOverwrites.edit(message.guild.roles.everyone, { SendMessages: true });
-        return message.channel.send('🔓 Channel status: **OPEN**');
-    }
-
-    if (content.startsWith('ms7')) {
-        if (!hasCommandRole(message.member, 'setup')) return;
-
-        const args = content.split(' ');
-        const amount = parseInt(args[1], 10) || 10;
-
-        pendingPurges.set(message.channel.id, amount);
-
-        const embed = new EmbedBuilder()
-            .setColor('#ed4245')
-            .setTitle('⚠️ Confirmation')
-            .setDescription(`Wach mt2kd baghi tmss7 **${amount}** d l-messages?`);
-
-        const row = new ActionRowBuilder().addComponents(
-            new ButtonBuilder().setCustomId('confirm_ms7').setLabel('Yes, Delete').setStyle(ButtonStyle.Danger),
-            new ButtonBuilder().setCustomId('cancel_ms7').setLabel('Cancel').setStyle(ButtonStyle.Secondary)
-        );
-
-        return message.channel.send({ embeds: [embed], components: [row] });
     }
 });
 
