@@ -1,3 +1,16 @@
+// ================= GLOBAL ERROR HANDLERS (PREVENT CRASHES) =================
+process.on('unhandledRejection', (reason, promise) => {
+    console.error('⚠️ [CRASH PREVENTION] Unhandled Rejection at:', promise, 'reason:', reason);
+});
+
+process.on('uncaughtException', (err, origin) => {
+    console.error('⚠️ [CRASH PREVENTION] Uncaught Exception:', err, 'origin:', origin);
+});
+
+process.on('uncaughtExceptionMonitor', (err, origin) => {
+    console.error('⚠️ [CRASH PREVENTION] Uncaught Exception Monitor:', err, 'origin:', origin);
+});
+
 const { 
     Client, GatewayIntentBits, Partials, EmbedBuilder, ActionRowBuilder, 
     ButtonBuilder, ButtonStyle, ChannelType, PermissionFlagsBits, 
@@ -5,6 +18,19 @@ const {
 } = require('discord.js');
 const fs = require('fs');
 const path = require('path');
+const express = require('express');
+
+// ================= KEEP ALIVE SERVER (PREVENT HOST SLEEP) =================
+const app = express();
+const PORT = process.env.PORT || 3000;
+
+app.get('/', (req, res) => {
+    res.status(200).send('Skill Tower Bot is Online and Healthy!');
+});
+
+app.listen(PORT, () => {
+    console.log(`🌐 Keep-Alive web server running on port ${PORT}`);
+});
 
 const client = new Client({
     intents: [
@@ -366,4 +392,4 @@ client.on('interactionCreate', async (interaction) => {
     }
 });
 
-// Bach tmseh l-balance l-khafjiya l-qdima f-lfile JSON dialk, tqdr t-msh l-file `userProfiles.json` aw t-snyf fih `{}` mlli t-ftah.
+client.login(CONFIG.TOKEN);
